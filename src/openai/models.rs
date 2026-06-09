@@ -1,45 +1,208 @@
-use anyhow::{Result, bail};
-use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-const DEVELOPER_ROLE: &str = "developer";
-const SYSTEM_ROLE: &str = "system";
-const USER_ROLE: &str = "user";
-const ASSISTANT_ROLE: &str = "assistant";
-const TOOL_ROLE: &str = "tool";
-const FUNCTION_ROLE: &str = "function";
+pub const CONTENT_PART_TEXT_TYPE: &str = "text";
+pub const CONTENT_PART_IMAGE_TYPE: &str = "image_url";
+pub const CONTENT_PART_AUDIO_TYPE: &str = "input_audio";
+pub const CONTENT_PART_FILE_TYPE: &str = "file";
+pub const CONTENT_PART_REFUSAL_TYPE: &str = "refusal";
 
-const REASONING_EFFORT_NONE: &str = "none";
-const REASONING_EFFORT_MINIMAL: &str = "minimal";
-const REASONING_EFFORT_LOW: &str = "low";
-const REASONING_EFFORT_MEDIUM: &str = "medium";
-const REASONING_EFFORT_HIGH: &str = "high";
-const REASONING_EFFORT_XHIGH: &str = "xhigh";
+pub const INPUT_AUDIO_DATA_FORMAT_MP3: &str = "mp3";
+pub const INPUT_AUDIO_DATA_FORMAT_WAV: &str = "wav";
 
-const FINISH_REASON_STOP: &str = "stop";
-const FINISH_REASON_LENGTH: &str = "length";
-const FINISH_REASON_TOOL_CALLS: &str = "tool_calls";
-const FINISH_REASON_CONTENT_FILTER: &str = "content_filter";
-const FINISH_REASON_FUNCTION_CALL: &str = "function_call";
+pub const IMAGE_URL_DETAIL_AUTO: &str = "auto";
+pub const IMAGE_URL_DETAIL_LOW: &str = "low";
+pub const IMAGE_URL_DETAIL_HIGH: &str = "high";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionMessageParam {
-    pub role: String,
-    pub content: String,
+pub const DEVELOPER_ROLE: &str = "developer";
+pub const SYSTEM_ROLE: &str = "system";
+pub const USER_ROLE: &str = "user";
+pub const ASSISTANT_ROLE: &str = "assistant";
+pub const TOOL_ROLE: &str = "tool";
+pub const FUNCTION_ROLE: &str = "function";
+
+pub const REASONING_EFFORT_NONE: &str = "none";
+pub const REASONING_EFFORT_MINIMAL: &str = "minimal";
+pub const REASONING_EFFORT_LOW: &str = "low";
+pub const REASONING_EFFORT_MEDIUM: &str = "medium";
+pub const REASONING_EFFORT_HIGH: &str = "high";
+pub const REASONING_EFFORT_XHIGH: &str = "xhigh";
+
+pub const FINISH_REASON_STOP: &str = "stop";
+pub const FINISH_REASON_LENGTH: &str = "length";
+pub const FINISH_REASON_TOOL_CALLS: &str = "tool_calls";
+pub const FINISH_REASON_CONTENT_FILTER: &str = "content_filter";
+pub const FINISH_REASON_FUNCTION_CALL: &str = "function_call";
+
+/// Content part for a message - supports text, image, audio, and file inputs.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ChatCompletionContentPart {
+    #[serde(rename = "type")]
+    pub type_: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<ImageUrl>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_audio: Option<InputAudioData>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileData>,
+}
+
+impl ChatCompletionContentPart {
+    pub fn text<S: Into<String>>(content: S) -> Self {
+        Self {
+            type_: CONTENT_PART_TEXT_TYPE.into(),
+            text: Some(content.into()),
+            ..Default::default()
+        }
+    }
+
+    /// URL or base64 data of the image.
+    pub fn image_url<S: Into<String>>(url: S, detail: Option<String>) -> Self {
+        Self {
+            type_: CONTENT_PART_IMAGE_TYPE.into(),
+            image_url: Some(ImageUrl {
+                url: url.into(),
+                detail: detail,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Base64-encoded audio data.
+    /// Audio format (wav/mp3).
+    pub fn input_audio<S: Into<String>>(data: S, format: S) -> Self {
+        Self {
+            type_: CONTENT_PART_AUDIO_TYPE.into(),
+            input_audio: Some(InputAudioData {
+                data: data.into(),
+                format: format.into(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Base64-encoded file data (optional, used when passing file as string).
+    pub fn file<S: Into<String>>(data: Option<S>, id: Option<S>, name: Option<S>) -> Self {
+        let mut fd = FileData::default();
+        if let Some(data) = data {
+            fd.file_data.replace(data.into());
+        }
+        if let Some(id) = id {
+            fd.file_id.replace(id.into());
+        }
+        if let Some(name) = name {
+            fd.filename.replace(name.into());
+        }
+        Self {
+            type_: CONTENT_PART_FILE_TYPE.into(),
+            file: Some(fd),
+            ..Default::default()
+        }
+    }
+}
+
+/// Image URL or base64-encoded data.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageUrl {
+    /// URL or base64 data of the image.
+    pub url: String,
+    /// Detail level for vision models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Base64-encoded audio data.
+#[derive(Debug, Clone, Serialize)]
+pub struct InputAudioData {
+    /// Base64-encoded audio data.
+    pub data: String,
+    /// Audio format (wav/mp3).
+    pub format: String,
+}
+
+/// File data for input.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FileData {
+    /// Base64-encoded file data (optional, used when passing file as string).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_data: Option<String>,
+    /// File ID (optional, used when passing file as ID).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
+    /// Filename (optional, used when passing file as string).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum ChatCompletionMessageContent {
+    Text(String),
+    Parts(Vec<ChatCompletionContentPart>),
+}
+
+/// Data about a previous audio response from the model.
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioResponseData {
+    /// Unique identifier for a previous audio response.
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatCompletionMessageParam {
+    pub role: String,
+    pub content: ChatCompletionMessageContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioResponseData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatCompletionMessageParam {
     pub fn new<S1: Into<String>, S2: Into<String>>(role: S1, content: S2) -> Self {
         Self {
             role: role.into(),
-            content: content.into(),
+            content: ChatCompletionMessageContent::Text(content.into()),
             name: None,
+            audio: None,
+            tool_call_id: None,
         }
+    }
+
+    pub fn new_with_parts<S: Into<String>>(role: S) -> Self {
+        Self {
+            role: role.into(),
+            content: ChatCompletionMessageContent::Parts(Vec::new()),
+            name: None,
+            audio: None,
+            tool_call_id: None,
+        }
+    }
+
+    pub fn push_part(mut self, p: ChatCompletionContentPart) -> Self {
+        if let ChatCompletionMessageContent::Parts(ref mut parts) = self.content {
+            parts.push(p);
+        }
+        self
+    }
+
+    pub fn set_name<S: Into<String>>(mut self, v: S) -> Self {
+        self.name.replace(v.into());
+        self
+    }
+
+    pub fn set_audio(mut self, v: AudioResponseData) -> Self {
+        self.audio.replace(v);
+        self
     }
 
     pub fn developer<S: Into<String>>(content: S) -> Self {
@@ -58,8 +221,10 @@ impl ChatCompletionMessageParam {
         Self::new(ASSISTANT_ROLE, content)
     }
 
-    pub fn tool<S: Into<String>>(content: S) -> Self {
-        Self::new(TOOL_ROLE, content)
+    pub fn tool<S1: Into<String>, S2: Into<String>>(content: S1, tool_call_id: S2) -> Self {
+        let mut p = Self::new(TOOL_ROLE, content);
+        p.tool_call_id.replace(tool_call_id.into());
+        p
     }
 
     pub fn is_developer(&self) -> bool {
@@ -83,7 +248,7 @@ impl ChatCompletionMessageParam {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum ChatCompletionTool {
     #[serde(rename = "function")]
@@ -93,7 +258,17 @@ pub enum ChatCompletionTool {
     Custom { custom: CustomToolDefinition },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl ChatCompletionTool {
+    pub fn function(fd: FunctionDefinition) -> Self {
+        Self::Function { function: fd }
+    }
+
+    pub fn custom(ctd: CustomToolDefinition) -> Self {
+        Self::Custom { custom: ctd }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct FunctionDefinition {
     pub name: String,
 
@@ -107,7 +282,7 @@ pub struct FunctionDefinition {
     pub strict: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CustomToolDefinition {
     pub name: String,
 
@@ -118,7 +293,7 @@ pub struct CustomToolDefinition {
     pub format: Option<CustomToolFormat>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum CustomToolFormat {
     #[serde(rename = "text")]
@@ -128,13 +303,13 @@ pub enum CustomToolFormat {
     Grammar { grammar: GrammarDefinition },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GrammarDefinition {
     pub definition: String,
     pub syntax: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum ChatCompletionToolChoice {
     Mode(ToolChoiceMode),
@@ -182,7 +357,7 @@ impl ChatCompletionToolChoice {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolChoiceMode {
     None,
@@ -190,7 +365,7 @@ pub enum ToolChoiceMode {
     Required,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionAllowedToolChoice {
     #[serde(rename = "type")]
     pub kind: AllowedToolsType,
@@ -200,25 +375,25 @@ pub struct ChatCompletionAllowedToolChoice {
     pub tools: Vec<ChatCompletionTool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum AllowedToolsType {
     #[serde(rename = "allowed_tools")]
     AllowedTools,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AllowedToolsMode {
     Auto,
     Required,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ToolName {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionNamedFunctionToolChoice {
     #[serde(rename = "type")]
     pub kind: FunctionToolType,
@@ -226,13 +401,13 @@ pub struct ChatCompletionNamedFunctionToolChoice {
     pub function: ToolName,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum FunctionToolType {
     #[serde(rename = "function")]
     Function,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionNamedCustomToolChoice {
     #[serde(rename = "type")]
     pub kind: CustomToolType,
@@ -240,14 +415,14 @@ pub struct ChatCompletionNamedCustomToolChoice {
     pub custom: ToolName,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum CustomToolType {
     #[serde(rename = "custom")]
     Custom,
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct ChatCompletionRequestBuilder {
+pub struct ChatCompletionBuilder {
     model: String,
     messages: Vec<ChatCompletionMessageParam>,
     stream: Option<bool>,
@@ -257,11 +432,11 @@ pub struct ChatCompletionRequestBuilder {
     frequency_penalty: Option<f32>,
     temperature: Option<f32>,
     reasoning_effort: Option<String>,
-    tool_choice: Option<ChatCompletionNamedCustomToolChoice>,
+    tool_choice: Option<ChatCompletionToolChoice>,
     tools: Vec<ChatCompletionTool>,
 }
 
-impl ChatCompletionRequestBuilder {
+impl ChatCompletionBuilder {
     pub fn model<S: Into<String>>(mut self, v: S) -> Self {
         self.model = v.into();
         self
@@ -312,6 +487,11 @@ impl ChatCompletionRequestBuilder {
         self
     }
 
+    pub fn tool_choice(mut self, v: ChatCompletionToolChoice) -> Self {
+        self.tool_choice.replace(v);
+        self
+    }
+
     pub fn tool(mut self, v: ChatCompletionTool) -> Self {
         self.tools.push(v);
         self
@@ -322,12 +502,8 @@ impl ChatCompletionRequestBuilder {
         self
     }
 
-    pub fn build(self) -> ChatCompletionRequest {
-        assert!(
-            !self.model.is_empty(),
-            "ChatCompletionRequestBuilder: model name is required"
-        );
-        ChatCompletionRequest {
+    pub fn build(self) -> ChatCompletion {
+        ChatCompletion {
             model: self.model,
             messages: self.messages,
             stream: self.stream,
@@ -344,8 +520,8 @@ impl ChatCompletionRequestBuilder {
 }
 
 /// https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ChatCompletionRequest {
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ChatCompletion {
     pub model: String,
 
     pub messages: Vec<ChatCompletionMessageParam>,
@@ -374,13 +550,13 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
 
-    tool_choice: Option<ChatCompletionNamedCustomToolChoice>,
+    pub tool_choice: Option<ChatCompletionToolChoice>,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ChatCompletionTool>,
 }
 
-impl ChatCompletionRequest {
+impl ChatCompletion {
     pub fn new<S: Into<String>>(model: S, messages: Vec<ChatCompletionMessageParam>) -> Self {
         Self {
             model: model.into(),
@@ -389,60 +565,82 @@ impl ChatCompletionRequest {
         }
     }
 
-    pub fn builder() -> ChatCompletionRequestBuilder {
-        ChatCompletionRequestBuilder::default()
+    pub fn builder() -> ChatCompletionBuilder {
+        ChatCompletionBuilder::default()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionResponse {
     pub id: String,
     pub choices: Vec<ChatCompletionChoice>,
     pub created: u64,
     pub model: String,
+    #[serde(default)]
     pub usage: Option<CompletionUsage>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionChoice {
     pub finish_reason: String,
     pub index: u32,
+    #[serde(default)]
     pub logprobs: Option<ChatCompletionLogprobs>,
     pub message: ChatCompletionMessage,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionLogprobs {
+    #[serde(default)]
     pub content: Option<Vec<ChatCompletionTokenLogprob>>,
+    #[serde(default)]
     pub refusal: Option<Vec<ChatCompletionTokenLogprob>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionTokenLogprob {
     pub token: String,
+    #[serde(default)]
     pub bytes: Option<Vec<u8>>,
     pub logprob: f32,
     pub top_logprobs: Vec<TopLogprob>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TopLogprob {
     pub token: String,
+    #[serde(default)]
     pub bytes: Option<Vec<u8>>,
     pub logprob: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionMessage {
     pub role: String,
+    #[serde(default)]
     pub content: Option<String>,
+    #[serde(default)]
     pub refusal: Option<String>,
+    #[serde(default)]
     pub annotations: Option<Vec<ChatCompletionAnnotation>>,
-    // pub audio: Option<ChatCompletionAudio>,
+    #[serde(default)]
+    pub audio: Option<ChatCompletionAudio>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<ChatCompletionMessageToolCall>>,
 }
 
 impl ChatCompletionMessage {
+    // pub fn as_param(&self) -> ChatCompletionMessageParam {
+    //     let mut param =
+    //         ChatCompletionMessageParam::new(&self.role, self.content.clone().unwrap_or_default());
+    //     if let Some(ref audio) = self.audio {
+    //         param.audio.replace(AudioResponseData {
+    //             id: audio.id.clone(),
+    //         });
+    //     }
+    //     param
+    // }
+
     pub fn has_tool_calls(&self) -> bool {
         self.tool_calls
             .as_ref()
@@ -450,23 +648,38 @@ impl ChatCompletionMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Audio response object when the audio output modality is requested.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatCompletionAudio {
+    /// Unique identifier for this audio response.
+    pub id: String,
+
+    /// Base64 encoded audio bytes generated by the model, in the format specified in the request.
+    pub data: String,
+
+    /// The Unix timestamp (in seconds) for when this audio response will no longer be accessible.
+    pub expires_at: i64,
+
+    /// Transcript of the audio generated by the model.
+    pub transcript: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum ChatCompletionAnnotation {
     #[serde(rename = "url_citation")]
     UrlCitation { url_citation: UrlCitation },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct UrlCitation {
     pub start_index: u32,
     pub end_index: u32,
-
     pub title: String,
     pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum ChatCompletionMessageToolCall {
     #[serde(rename = "function")]
@@ -495,7 +708,7 @@ impl ChatCompletionMessageToolCall {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct FunctionToolCall {
     pub name: String,
 
@@ -503,7 +716,7 @@ pub struct FunctionToolCall {
     pub arguments: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CustomToolCall {
     pub name: String,
 
@@ -511,118 +724,54 @@ pub struct CustomToolCall {
     pub input: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CompletionUsage {
     pub completion_tokens: u32,
     pub prompt_tokens: u32,
     pub total_tokens: u32,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub completion_tokens_details: Option<CompletionTokensDetails>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CompletionTokensDetails {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub accepted_prediction_tokens: Option<u32>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub audio_tokens: Option<u32>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub reasoning_tokens: Option<u32>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub rejected_prediction_tokens: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PromptTokensDetails {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub audio_tokens: Option<u32>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cached_tokens: Option<u32>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct OpenaiClientBuilder {
-    base_url: String,
-    api_key: Option<String>,
-    http_client: Option<HttpClient>,
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListModelsResponse {
+    #[serde(default)]
+    pub data: Vec<Model>,
+    pub object: String,
 }
 
-impl OpenaiClientBuilder {
-    pub fn base_url<S: Into<String>>(mut self, v: S) -> Self {
-        self.base_url = v.into();
-        self
-    }
-
-    pub fn api_key<S: Into<String>>(mut self, v: S) -> Self {
-        self.api_key.replace(v.into());
-        self
-    }
-
-    pub fn http_client(mut self, v: HttpClient) -> Self {
-        self.http_client.replace(v);
-        self
-    }
-
-    pub fn build(self) -> OpenaiClient {
-        assert!(
-            !self.base_url.is_empty(),
-            "OpenaiClientBuilder: base_url is required"
-        );
-        OpenaiClient {
-            base_url: self.base_url,
-            api_key: self.api_key,
-            http_client: self.http_client.unwrap_or_default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct OpenaiClient {
-    pub base_url: String,
-    api_key: Option<String>,
-    http_client: HttpClient,
-}
-
-impl OpenaiClient {
-    pub fn new(base_url: String, api_key: Option<String>) -> Self {
-        Self {
-            base_url: base_url,
-            api_key: api_key,
-            http_client: HttpClient::default(),
-        }
-    }
-
-    pub fn builder() -> OpenaiClientBuilder {
-        OpenaiClientBuilder::default()
-    }
-
-    pub async fn create_chat_completion(
-        &self,
-        request: &ChatCompletionRequest,
-    ) -> Result<ChatCompletionResponse> {
-        let mut builder = self
-            .http_client
-            .post(format!("{}/chat/completions", self.base_url));
-
-        if let Some(ref api_key) = self.api_key {
-            builder = builder.header("Authorization", format!("Bearer {api_key}"));
-        }
-
-        let response = builder.json(request).send().await?;
-
-        if !response.status().is_success() {
-            let body = response.text().await?;
-            bail!("OpenAI API error: {body}");
-        }
-
-        Ok(response.json::<ChatCompletionResponse>().await?)
-    }
+#[derive(Debug, Clone, Deserialize)]
+pub struct Model {
+    pub id: String,
+    pub created: u64,
+    pub owned_by: String,
+    pub object: String,
 }
