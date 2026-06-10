@@ -1,20 +1,37 @@
 use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
-use std::{
-    collections::VecDeque,
-    io::{BufRead, Read, Write},
-};
+use std::io::{BufRead, Read, Write};
 
 #[derive(Debug, Clone, Default)]
 pub struct Execution {
     pub command: String,
-    pub raw_input: String,
+    pub raw_prompt: String,
     pub raw_output: String,
-    pub output: String,
+    plain_output: Option<String>,
+}
+
+impl Execution {
+    pub fn plain_output(&mut self) -> &str {
+        self.plain_output
+            .get_or_insert(strip_ansi_escapes::strip_str(
+                self.raw_output.replace("\t", "  "),
+            ))
+    }
+
+    pub fn write_raw_prompt<W: Write>(&self, mut writer: W) -> Result<()> {
+        writer.write_all(self.raw_prompt.as_bytes())?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn write_raw_output<W: Write>(&self, mut writer: W) -> Result<()> {
+        writer.write_all(self.raw_output.as_bytes())?;
+        writer.flush()?;
+        Ok(())
+    }
 }
 
 pub struct Terminal {
-    pub executions: VecDeque<Execution>,
     writer: Box<dyn Write + Send>,
     reader: Box<dyn Read + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -42,22 +59,21 @@ impl Terminal {
         drop(pair.slave);
 
         Ok(Self {
-            executions: VecDeque::new(),
             writer: pair.master.take_writer()?,
             reader: pair.master.try_clone_reader()?,
             child: child,
         })
     }
 
-    pub fn execute(&mut self, command: &str) -> Result<usize> {
-        let tcommand = command.trim();
+    pub fn execute(&mut self, command: &str) -> Result<Execution> {
+        let command = command.trim();
         let mut e = Execution {
-            command: tcommand.into(),
+            command: command.into(),
             ..Default::default()
         };
         let mut skip = 0;
-        for c_line in tcommand.lines() {
-            writeln!(self.writer, "{}", c_line.trim())?;
+        for line in command.lines() {
+            writeln!(self.writer, "{}", line.trim())?;
             skip += 1;
         }
         self.writer.flush()?;
@@ -69,8 +85,8 @@ impl Terminal {
         for (n, line) in lines.skip(skip + 1).enumerate() {
             let line = line?;
             if n < skip {
-                e.raw_input.push_str(&line);
-                e.raw_input.push('\n');
+                e.raw_prompt.push_str(&line);
+                e.raw_prompt.push('\n');
                 continue;
             }
             if line == "__EOFEX__" {
@@ -86,16 +102,6 @@ impl Terminal {
             e.raw_output.push_str(&line);
             e.raw_output.push('\n');
         }
-        e.output = strip_ansi_escapes::strip_str(&e.raw_output.replace("\t", "  "));
-        println!("-- {:?}", e.output);
-        self.executions.push_back(e);
-        Ok(self.executions.len() - 1)
-    }
-
-    pub fn execute_many(&mut self, commands: &[String]) -> Result<usize> {
-        for command in commands.iter() {
-            let _ = self.execute(command)?;
-        }
-        Ok(self.executions.len() - 1)
+        Ok(e)
     }
 }

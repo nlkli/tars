@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, default};
 
 pub const CONTENT_PART_TEXT_TYPE: &str = "text";
 pub const CONTENT_PART_IMAGE_TYPE: &str = "image_url";
@@ -40,16 +40,12 @@ pub const FINISH_REASON_FUNCTION_CALL: &str = "function_call";
 pub struct ChatCompletionContentPart {
     #[serde(rename = "type")]
     pub type_: String,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<ImageUrl>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_audio: Option<InputAudioData>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<FileData>,
 }
@@ -141,11 +137,13 @@ pub struct FileData {
     pub filename: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(untagged)]
 pub enum ChatCompletionMessageContent {
     Text(String),
     Parts(Vec<ChatCompletionContentPart>),
+    #[default]
+    None,
 }
 
 /// Data about a previous audio response from the model.
@@ -155,7 +153,7 @@ pub struct AudioResponseData {
     pub id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ChatCompletionMessageParam {
     pub role: String,
     pub content: ChatCompletionMessageContent,
@@ -163,6 +161,8 @@ pub struct ChatCompletionMessageParam {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioResponseData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ChatCompletionMessageToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
@@ -172,9 +172,7 @@ impl ChatCompletionMessageParam {
         Self {
             role: role.into(),
             content: ChatCompletionMessageContent::Text(content.into()),
-            name: None,
-            audio: None,
-            tool_call_id: None,
+            ..Default::default()
         }
     }
 
@@ -182,9 +180,7 @@ impl ChatCompletionMessageParam {
         Self {
             role: role.into(),
             content: ChatCompletionMessageContent::Parts(Vec::new()),
-            name: None,
-            audio: None,
-            tool_call_id: None,
+            ..Default::default()
         }
     }
 
@@ -202,6 +198,11 @@ impl ChatCompletionMessageParam {
 
     pub fn set_audio(mut self, v: AudioResponseData) -> Self {
         self.audio.replace(v);
+        self
+    }
+
+    pub fn tool_calls(mut self, tcs: Vec<ChatCompletionMessageToolCall>) -> Self {
+        self.tool_calls.replace(tcs);
         self
     }
 
@@ -253,7 +254,6 @@ impl ChatCompletionMessageParam {
 pub enum ChatCompletionTool {
     #[serde(rename = "function")]
     Function { function: FunctionDefinition },
-
     #[serde(rename = "custom")]
     Custom { custom: CustomToolDefinition },
 }
@@ -271,13 +271,10 @@ impl ChatCompletionTool {
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionDefinition {
     pub name: String,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
 }
@@ -285,10 +282,8 @@ pub struct FunctionDefinition {
 #[derive(Debug, Clone, Serialize)]
 pub struct CustomToolDefinition {
     pub name: String,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<CustomToolFormat>,
 }
@@ -298,7 +293,6 @@ pub struct CustomToolDefinition {
 pub enum CustomToolFormat {
     #[serde(rename = "text")]
     Text,
-
     #[serde(rename = "grammar")]
     Grammar { grammar: GrammarDefinition },
 }
@@ -336,7 +330,7 @@ impl ChatCompletionToolChoice {
 
     pub fn allowed_tools(mode: AllowedToolsMode, tools: Vec<ChatCompletionTool>) -> Self {
         Self::AllowedTools(ChatCompletionAllowedToolChoice {
-            kind: AllowedToolsType::AllowedTools,
+            type_: AllowedToolsType::AllowedTools,
             mode: mode,
             tools: tools,
         })
@@ -344,14 +338,14 @@ impl ChatCompletionToolChoice {
 
     pub fn function(name: impl Into<String>) -> Self {
         Self::Function(ChatCompletionNamedFunctionToolChoice {
-            kind: FunctionToolType::Function,
+            type_: FunctionToolType::Function,
             function: ToolName { name: name.into() },
         })
     }
 
     pub fn custom(name: impl Into<String>) -> Self {
         Self::Custom(ChatCompletionNamedCustomToolChoice {
-            kind: CustomToolType::Custom,
+            type_: CustomToolType::Custom,
             custom: ToolName { name: name.into() },
         })
     }
@@ -368,10 +362,8 @@ pub enum ToolChoiceMode {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionAllowedToolChoice {
     #[serde(rename = "type")]
-    pub kind: AllowedToolsType,
-
+    pub type_: AllowedToolsType,
     pub mode: AllowedToolsMode,
-
     pub tools: Vec<ChatCompletionTool>,
 }
 
@@ -396,7 +388,7 @@ pub struct ToolName {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionNamedFunctionToolChoice {
     #[serde(rename = "type")]
-    pub kind: FunctionToolType,
+    pub type_: FunctionToolType,
 
     pub function: ToolName,
 }
@@ -410,7 +402,7 @@ pub enum FunctionToolType {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionNamedCustomToolChoice {
     #[serde(rename = "type")]
-    pub kind: CustomToolType,
+    pub type_: CustomToolType,
 
     pub custom: ToolName,
 }
@@ -523,35 +515,25 @@ impl ChatCompletionBuilder {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ChatCompletion {
     pub model: String,
-
     pub messages: Vec<ChatCompletionMessageParam>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
-
     /// 1..=128
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u8>,
-
     /// -2..=2
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
-
     /// 0..=2
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-
     pub tool_choice: Option<ChatCompletionToolChoice>,
-
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ChatCompletionTool>,
 }
@@ -641,6 +623,10 @@ impl ChatCompletionMessage {
     //     param
     // }
 
+    pub fn content_or_default(&self) -> &str {
+        self.content.as_ref().map(|c| c.as_str()).unwrap_or("")
+    }
+
     pub fn has_tool_calls(&self) -> bool {
         self.tool_calls
             .as_ref()
@@ -653,13 +639,10 @@ impl ChatCompletionMessage {
 pub struct ChatCompletionAudio {
     /// Unique identifier for this audio response.
     pub id: String,
-
     /// Base64 encoded audio bytes generated by the model, in the format specified in the request.
     pub data: String,
-
     /// The Unix timestamp (in seconds) for when this audio response will no longer be accessible.
     pub expires_at: i64,
-
     /// Transcript of the audio generated by the model.
     pub transcript: String,
 }
@@ -679,7 +662,7 @@ pub struct UrlCitation {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ChatCompletionMessageToolCall {
     #[serde(rename = "function")]
@@ -687,7 +670,6 @@ pub enum ChatCompletionMessageToolCall {
         id: String,
         function: FunctionToolCall,
     },
-
     #[serde(rename = "custom")]
     Custom { id: String, custom: CustomToolCall },
 }
@@ -708,18 +690,16 @@ impl ChatCompletionMessageToolCall {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionToolCall {
     pub name: String,
-
     /// JSON string generated by the model.
     pub arguments: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomToolCall {
     pub name: String,
-
     /// Raw tool input generated by the model.
     pub input: String,
 }
@@ -729,10 +709,8 @@ pub struct CompletionUsage {
     pub completion_tokens: u32,
     pub prompt_tokens: u32,
     pub total_tokens: u32,
-
     #[serde(default)]
     pub completion_tokens_details: Option<CompletionTokensDetails>,
-
     #[serde(default)]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
 }
@@ -741,13 +719,10 @@ pub struct CompletionUsage {
 pub struct CompletionTokensDetails {
     #[serde(default)]
     pub accepted_prediction_tokens: Option<u32>,
-
     #[serde(default)]
     pub audio_tokens: Option<u32>,
-
     #[serde(default)]
     pub reasoning_tokens: Option<u32>,
-
     #[serde(default)]
     pub rejected_prediction_tokens: Option<u32>,
 }
@@ -774,4 +749,64 @@ pub struct Model {
     pub created: u64,
     pub owned_by: String,
     pub object: String,
+}
+
+/// Delta content in a streaming chunk.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatCompletionChunkChoiceDelta {
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub refusal: Option<String>,
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<DeltaToolCalls>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeltaToolCalls {
+    pub index: usize,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub function: Option<DeltaFunctionToolCall>,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeltaFunctionToolCall {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<String>,
+}
+
+/// A single choice in a streaming chunk.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatCompletionChunkChoice {
+    pub index: usize,
+    pub delta: ChatCompletionChunkChoiceDelta,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
+}
+
+/// Streaming chat completion chunk.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatCompletionChunk {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    // #[serde(default)]
+    // pub system_fingerprint: Option<String>,
+    pub choices: Vec<ChatCompletionChunkChoice>,
+    #[serde(default)]
+    pub usage: Option<CompletionUsage>,
+    // #[serde(default)]
+    // pub timings: Option<Timings>,
 }

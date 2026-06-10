@@ -1,6 +1,16 @@
-use crate::openai::models::{ChatCompletionRequest, ChatCompletionResponse, ListModelsResponse};
+use crate::openai::models::{
+    ChatCompletion, ChatCompletionChunk, ChatCompletionResponse, ListModelsResponse,
+};
 use anyhow::{Result, bail};
 use reqwest::Client as HttpClient;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio_stream::StreamExt;
+
+#[derive(Debug)]
+pub enum ChatCompletionValue {
+    Chunk(Result<ChatCompletionChunk>),
+    Response(ChatCompletionResponse),
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct OpenaiClientBuilder {
@@ -77,8 +87,9 @@ impl OpenaiClient {
 
     pub async fn create_chat_completion(
         &self,
-        request: &ChatCompletionRequest,
-    ) -> Result<ChatCompletionResponse> {
+        completion: &ChatCompletion,
+        tx: UnboundedSender<ChatCompletionValue>,
+    ) -> Result<()> {
         let mut builder = self
             .http_client
             .post(format!("{}/chat/completions", self.base_url));
@@ -87,13 +98,50 @@ impl OpenaiClient {
             builder = builder.header("Authorization", format!("Bearer {api_key}"));
         }
 
-        let response = builder.json(request).send().await?;
+        let response = builder.json(completion).send().await?;
 
         if !response.status().is_success() {
             let body = response.text().await?;
             bail!("OpenAI API error: {body}");
         }
 
-        Ok(response.json::<ChatCompletionResponse>().await?)
+        if !completion.stream.unwrap_or_default() {
+            tx.send(ChatCompletionValue::Response(
+                response.json::<ChatCompletionResponse>().await?,
+            ))?;
+            return Ok(());
+        }
+
+        tokio::spawn(async move {
+            let mut stream = response.bytes_stream();
+            let mut line_buf = Vec::new();
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        for byte in chunk {
+                            if byte != b'\n' {
+                                line_buf.push(byte);
+                                continue;
+                            }
+                            let chunk_string = String::from_utf8_lossy(&line_buf).to_string();
+                            if let Some(data) = chunk_string.strip_prefix("data:") {
+                                let trimmed = data.trim();
+                                if let Ok(ccc) =
+                                    serde_json::from_str::<ChatCompletionChunk>(&trimmed)
+                                {
+                                    let _ = tx.send(ChatCompletionValue::Chunk(Ok(ccc)));
+                                }
+                            }
+                            line_buf.truncate(0);
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(ChatCompletionValue::Chunk(Err(e.into())));
+                    }
+                }
+            }
+        });
+
+        Ok(())
     }
 }
