@@ -47,29 +47,39 @@ pub fn spawn_chat(
             while let Some(cc_value) = conmpletion_rx.recv().await {
                 match cc_value {
                     ChatCompletionValue::Chunk(_chunk) => {}
-                    ChatCompletionValue::Response(response) => {
+                    ChatCompletionValue::Response(mut response) => {
                         let mut chat_lock = chat.lock().await;
-                        let first_message = response.choices.first().map(|c| &c.message);
+
+                        let first_message = response.choices.first_mut().map(|c| &mut c.message);
+
                         if first_message.is_none() {
                             continue;
                         }
+
                         let message = unsafe { first_message.unwrap_unchecked() };
+
                         // println!("{:#?}", message);
-                        if let Some(tcs) = message.tool_calls.as_ref() {
-                            let tool_calls_message = ChatCompletionMessageParam::new(
-                                &message.role,
-                                message.content_or_default(),
-                            )
-                            .tool_calls(tcs.clone());
-                            chat_lock.completion.messages.push(tool_calls_message);
+                        if let Some(tcs) = message.tool_calls.take() {
                             let message_params = tcs
                                 .iter()
                                 .map(|tc| chat_lock.tool_manager.call(tc))
                                 .collect::<Vec<_>>();
+
+                            let tool_calls_message = ChatCompletionMessageParam::new(
+                                &message.role,
+                                message.content_or_default(),
+                            )
+                            .tool_calls(tcs);
+
+                            chat_lock.completion.messages.push(tool_calls_message);
+
                             let _ = chat_tx.send(message_params);
+
                             drop(chat_lock);
+
                             continue;
                         }
+
                         let _ = event_tx.send(ChatEvent::Test(message.clone()));
                         chat_lock
                             .completion
@@ -78,6 +88,7 @@ pub fn spawn_chat(
                                 &message.role,
                                 message.content_or_default(),
                             ));
+
                         drop(chat_lock);
                     }
                 }
@@ -97,6 +108,7 @@ pub fn spawn_chat(
                 .create_chat_completion(&chat_lock.completion, completion_tx.clone())
                 .await
             {
+                eprintln!("ERROR: create_chat_completion: {}", e);
                 let _ = event_tx.send(ChatEvent::Message(Err(e.into())));
             }
             drop(chat_lock);

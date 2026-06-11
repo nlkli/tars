@@ -8,7 +8,7 @@ mod tools;
 #[tokio::main]
 async fn main() -> Result<()> {
     let terminal = term::Terminal::new("zsh")?;
-    let terminal_tool = tools::TerminalTool::new(terminal, None);
+    let terminal_tool = tools::TerminalTool::new(terminal, 4096, None);
     let mut tm = tools::ToolManager::new();
     tm.add(terminal_tool);
 
@@ -19,11 +19,19 @@ async fn main() -> Result<()> {
     // let llama_client = llamacpp::Client::builder()
     //     .base_url("http://localhost:8080/v1")
     //     .build();
-
+    //
     // let models = llama_client.models().await?;
+    //
+    // println!("{:?}", models);
+    //
+    // return Ok(());
 
-    let mut builder = openai::models::ChatCompletion::builder()
-        .model("gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M");
+    // OmniCoder-Claude-uncensored-V2-Q4_K_M
+    // gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M
+    // Qwopus3.5-9B-Coder-MTP-Q4_K_M
+
+    let mut builder =
+        openai::models::ChatCompletion::builder().model("gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M");
 
     builder = tm.register_all(builder);
 

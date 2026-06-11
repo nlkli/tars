@@ -158,6 +158,8 @@ pub struct ChatCompletionMessageParam {
     pub role: String,
     pub content: ChatCompletionMessageContent,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioResponseData>,
@@ -423,6 +425,7 @@ pub struct ChatCompletionBuilder {
     n: Option<u8>,
     frequency_penalty: Option<f32>,
     temperature: Option<f32>,
+    logprobs: Option<bool>,
     reasoning_effort: Option<String>,
     tool_choice: Option<ChatCompletionToolChoice>,
     tools: Vec<ChatCompletionTool>,
@@ -474,6 +477,11 @@ impl ChatCompletionBuilder {
         self
     }
 
+    pub fn logprobs(mut self) -> Self {
+        self.logprobs.replace(true);
+        self
+    }
+
     pub fn reasoning_effort<S: Into<String>>(mut self, v: S) -> Self {
         self.reasoning_effort = Some(v.into());
         self
@@ -504,6 +512,7 @@ impl ChatCompletionBuilder {
             n: self.n,
             frequency_penalty: self.frequency_penalty,
             temperature: self.temperature,
+            logprobs: self.logprobs,
             reasoning_effort: self.reasoning_effort,
             tool_choice: self.tool_choice,
             tools: self.tools,
@@ -531,6 +540,8 @@ pub struct ChatCompletion {
     /// 0..=2
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     pub tool_choice: Option<ChatCompletionToolChoice>,
@@ -601,6 +612,8 @@ pub struct ChatCompletionMessage {
     pub role: String,
     #[serde(default)]
     pub content: Option<String>,
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
     #[serde(default)]
     pub refusal: Option<String>,
     #[serde(default)]

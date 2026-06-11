@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use crate::{
     openai::models::{
         ChatCompletionBuilder, ChatCompletionMessageParam, ChatCompletionMessageToolCall,
@@ -8,54 +6,56 @@ use crate::{
     term::{Execution, Terminal},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TerminalToolCallError {
-    pub error: String,
+#[serde(tag = "type")]
+pub enum TerminalToolError {
+    InvalidArguments { message: String },
+    CommandExecution { message: String },
 }
 
-impl TerminalToolCallError {
+impl TerminalToolError {
+    fn invalid_arguments(message: impl Into<String>) -> Self {
+        Self::InvalidArguments {
+            message: message.into(),
+        }
+    }
+
+    fn command_execution(message: impl Into<String>) -> Self {
+        Self::CommandExecution {
+            message: message.into(),
+        }
+    }
+
     fn as_content(&self) -> String {
-        serde_json::to_string(self).unwrap()
-    }
-
-    // fn tool_does_not_exist(name: &str) -> Self {
-    //     Self {
-    //         error: format!("Tool '{}' does not exist.", name),
-    //     }
-    // }
-
-    fn invalid_args(serde_error: &str) -> Self {
-        Self {
-            error: format!("Invalid arguments: {}", serde_error),
-        }
-    }
-
-    fn command_index_out_of_range(i: usize, max: usize) -> Self {
-        Self {
-            error: format!("Command index '{i}' out of range: max({max})"),
-        }
+        serde_json::to_string(self).unwrap_or_default()
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct EexecuteTerminalCommandsArgs {
-    pub commands: Vec<String>,
+pub struct ExecuteTerminalCommandsArgs {
+    #[serde(default)]
+    pub commands: Option<Vec<String>>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub silent: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReadCommandOutputArgs {
-    pub index: usize,
-    #[serde(default)]
-    pub offset: Option<usize>,
-    #[serde(default)]
-    pub limit: Option<usize>,
+impl ExecuteTerminalCommandsArgs {
+    fn take_commands(&mut self) -> Option<Vec<String>> {
+        self.command
+            .take()
+            .map(|c| Vec::from([c]))
+            .or(self.commands.take())
+    }
 }
 
 impl super::Tool for TerminalTool {
     fn name_space(&self) -> &[&str] {
-        self.name_space
+        &["execute_terminal_commands", "continue_output"]
     }
 
     fn register(&self, builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
@@ -69,40 +69,46 @@ impl super::Tool for TerminalTool {
 
 pub struct TerminalTool {
     // title: &'static str,
-    name_space: &'static [&'static str],
     term: Terminal,
-    history: VecDeque<Execution>,
+    max_output_chunk_size: usize,
+    pending_output_chunks: VecDeque<String>,
     execution_tx: Option<UnboundedSender<Execution>>,
 }
 
 impl TerminalTool {
-    pub fn new(t: Terminal, execution_tx: Option<UnboundedSender<Execution>>) -> Self {
+    pub fn new(
+        t: Terminal,
+        max_output_chunk_size: usize,
+        execution_tx: Option<UnboundedSender<Execution>>,
+    ) -> Self {
         Self {
-            // title: "terminal",
-            name_space: &["execute_terminal_commands", "read_command_output"],
             term: t,
-            history: VecDeque::new(),
+            max_output_chunk_size,
+            pending_output_chunks: VecDeque::new(),
             execution_tx,
         }
     }
-
-    // pub fn title(&self) -> &str {
-    //     self.title
-    // }
 
     fn register(&self, mut builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
         let execute_terminal_commands = FunctionDefinition {
             name: "execute_terminal_commands".into(),
             description: Some(
-                "Execute one or more shell commands in a Unix terminal. Commands are executed sequentially in the order provided. The tool returns the index of the last scheduled command. To inspect command output, call read_command_output with bhe returned index.".into(),
+                "Execute one or more shell commands in the terminal. Set silent=true when output is not needed.".into(),
             ),
             parameters: Some(
-r#"{
+                r#"{
   "type": "object",
   "properties": {
     "commands": {
-      "type": "array<string>",
-      "description": "List of shell commands to execute sequentially.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Commands executed sequentially."
+    },
+    "silent": {
+      "type": "boolean",
+      "description": "When true, command output is suppressed."
     }
   },
   "required": ["commands"],
@@ -113,37 +119,16 @@ r#"{
             strict: Some(true),
         };
 
-        let read_command_output = FunctionDefinition {
-            name: "read_command_output".into(),
-            description: Some(
-                "Retrieve the textual output of a previously executed terminal command using its command index.".into(),
-            ),
+        let continue_output = FunctionDefinition {
+            name: "continue_output".into(),
+            description: Some("Read the next chunk of output from the previous command when more_output_available=true.".into()),
             parameters: Some(
-r#"{
-  "type": "object",
-  "properties": {
-    "index": {
-      "type": "number",
-      "description": "Index of a previously executed command."
-    },
-    "offset": {
-      "type": "number",
-      "description": "Character offset to start reading from. Defaults to 0."
-    },
-    "limit": {
-      "type": "number",
-      "description": "Maximum number of characters to return. Defaults to 4096."
-    }
-  },
-  "required": ["index"],
-  "additionalProperties": false
-}"#
-                .into(),
+                r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
             ),
             strict: Some(true),
         };
         builder = builder.tool(ChatCompletionTool::function(execute_terminal_commands));
-        builder = builder.tool(ChatCompletionTool::function(read_command_output));
+        builder = builder.tool(ChatCompletionTool::function(continue_output));
         builder
     }
 
@@ -159,82 +144,73 @@ r#"{
         }
     }
 
+    fn next_output_chunk(&mut self) -> String {
+        let Some(chunk) = self.pending_output_chunks.pop_front() else {
+            return String::new();
+        };
+
+        if self.pending_output_chunks.is_empty() {
+            return chunk;
+        }
+
+        serde_json::json!({
+            "output": chunk,
+            "more_output_available": true
+        })
+        .to_string()
+    }
+
     fn call_function(
         &mut self,
         id: &str,
         f: &FunctionToolCall,
     ) -> Option<ChatCompletionMessageParam> {
-        let mut content = String::new();
+        let content: String;
         match f.name.as_str() {
             "execute_terminal_commands" => {
-                match serde_json::from_str::<EexecuteTerminalCommandsArgs>(&f.arguments) {
-                    Ok(args) => {
-                        for command in args.commands.iter() {
+                match serde_json::from_str::<ExecuteTerminalCommandsArgs>(&f.arguments) {
+                    Ok(mut args) => {
+                        let mut output = String::new();
+                        let Some(commands) = args.take_commands() else {
+                            content =
+                                TerminalToolError::invalid_arguments("missing field `commands`")
+                                    .as_content();
+                            return Some(ChatCompletionMessageParam::tool(content, id));
+                        };
+                        for command in commands.iter() {
                             match self.term.execute(command) {
-                                Ok(ex) => {
-                                    // let val = serde_json::json!({"last_command_index": i});
-                                    // content = serde_json::to_string(&val).unwrap();
+                                Ok(mut ex) => {
                                     if let Some(ref tx) = self.execution_tx {
                                         let _ = tx.send(ex.clone());
                                     }
-                                    self.history.push_back(ex);
+                                    output.push_str(ex.plain_output());
                                 }
                                 Err(e) => {
-                                    content = TerminalToolCallError::invalid_args(&e.to_string())
+                                    content = TerminalToolError::command_execution(&e.to_string())
                                         .as_content();
-                                    break;
+                                    return Some(ChatCompletionMessageParam::tool(content, id));
                                 }
                             }
                         }
-                        if content.is_empty() {
-                            content = format!(
-                                "last_command_index = {}\nuse read_command_output for read",
-                                self.history.len() - 1
-                            );
+                        self.pending_output_chunks = output
+                            .chars()
+                            .collect::<Vec<_>>()
+                            .chunks(self.max_output_chunk_size)
+                            .map(|c| String::from_iter(c))
+                            .collect::<VecDeque<_>>();
+                        if args.silent {
+                            return Some(ChatCompletionMessageParam::tool("", id));
                         }
+                        content = self.next_output_chunk();
                     }
                     Err(err) => {
                         content =
-                            TerminalToolCallError::invalid_args(&err.to_string()).as_content();
+                            TerminalToolError::invalid_arguments(&err.to_string()).as_content();
                     }
                 }
             }
-            "read_command_output" => {
-                match serde_json::from_str::<ReadCommandOutputArgs>(&f.arguments) {
-                    Ok(args) => match self.history.get_mut(args.index) {
-                        Some(ex) => {
-                            // let val = serde_json::json!({"command_output": &v.output});
-                            // content = serde_json::to_string(&val).unwrap();
-                            let output = ex.plain_output();
-                            let chars = output.chars().collect::<Vec<_>>();
-                            let offset = args.offset.unwrap_or(0);
-                            let limit = args.limit.unwrap_or(4096);
-                            let end = (offset + limit).min(chars.len());
-                            let chunk = chars[offset..end].iter().collect::<String>();
-                            let more = end < chars.len();
-                            if !more && offset == 0 {
-                                content = chunk;
-                            } else {
-                                let json_content = serde_json::json!({
-                                    "o": chunk,
-                                    "n": end,
-                                    "m": more
-                                });
-                                content = serde_json::to_string(&json_content).unwrap_or_default();
-                            }
-                        }
-                        None => {
-                            content = TerminalToolCallError::command_index_out_of_range(
-                                args.index,
-                                self.history.len() - 1,
-                            )
-                            .as_content();
-                        }
-                    },
-                    Err(e) => {
-                        content = TerminalToolCallError::invalid_args(&e.to_string()).as_content();
-                    }
-                }
+            "continue_output" => {
+                content = self.next_output_chunk();
             }
             _ => {
                 return None;
