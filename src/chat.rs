@@ -48,7 +48,10 @@ pub fn spawn_chat(
                 match cc_value {
                     ChatCompletionValue::Chunk(_chunk) => {}
                     ChatCompletionValue::Response(mut response) => {
-                        let mut chat_lock = chat.lock().await;
+                        println!(
+                            "------------------------------------\nRESPONSE: {:#?}",
+                            response
+                        );
 
                         let first_message = response.choices.first_mut().map(|c| &mut c.message);
 
@@ -58,8 +61,16 @@ pub fn spawn_chat(
 
                         let message = unsafe { first_message.unwrap_unchecked() };
 
+                        println!("try chat_lock");
+
+                        let mut chat_lock = chat.lock().await;
+
+                        println!("---- chat_lock");
+
                         // println!("{:#?}", message);
                         if let Some(tcs) = message.tool_calls.take() {
+                            println!("tool_calls");
+
                             let message_params = tcs
                                 .iter()
                                 .map(|tc| chat_lock.tool_manager.call(tc))
@@ -73,7 +84,11 @@ pub fn spawn_chat(
 
                             chat_lock.completion.messages.push(tool_calls_message);
 
-                            let _ = chat_tx.send(message_params);
+                            println!("message_params lengh = {}", message_params.len());
+
+                            if let Err(e) = chat_tx.send(message_params) {
+                                eprintln!("SENDERROR: {}", e);
+                            }
 
                             drop(chat_lock);
 
@@ -100,9 +115,13 @@ pub fn spawn_chat(
             if mps.is_empty() {
                 continue;
             }
+
             let mut chat_lock = chat.lock().await;
+
             chat_lock.completion.messages.extend_from_slice(&mps);
+
             println!("{:#?}", chat_lock.completion.messages);
+
             if let Err(e) = chat_lock
                 .client
                 .create_chat_completion(&chat_lock.completion, completion_tx.clone())
@@ -111,8 +130,10 @@ pub fn spawn_chat(
                 eprintln!("ERROR: create_chat_completion: {}", e);
                 let _ = event_tx.send(ChatEvent::Message(Err(e.into())));
             }
+
             drop(chat_lock);
         }
+        println!("done");
     });
     (chat_tx, event_rx)
 }

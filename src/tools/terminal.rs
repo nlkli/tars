@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type")]
+#[serde(tag = "error")]
 pub enum TerminalToolError {
     InvalidArguments { message: String },
     CommandExecution { message: String },
