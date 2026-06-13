@@ -278,39 +278,32 @@ impl Terminal {
             command: command.into(),
             ..Default::default()
         };
-        let command = format!(r#"{command} ; echo "__endofcommand__""#);
+        let command = format!(r#"{command} ; echo "__End_OF_Command__""#);
         let mut skip = 0;
-        for line in command.lines() {
+        let total_lines = command.lines().count();
+        // println!("TOTAL LINES: {}", total_lines);
+        for (n, line) in command.lines().enumerate() {
             writeln!(self.writer, "{}", line)?;
             self.writer.flush()?;
+            // println!("WRITELN {n}/{total_lines} LEN {} : {line}", line.len());
             let _ = self.line_rx.recv()?;
             skip += 1;
         }
-        // writeln!(self.writer, r#"echo "__EOFEX__""#)?;
-        // self.writer.flush()?;
+        // println!("--END--");
         let mut n = 0;
         while let Ok(line) = self.line_rx.recv() {
             println!("{:?}  [LEN {}]", line, line.len());
-            if line == "__endofcommand__" {
-                // e.raw_output.truncate(e.raw_output.len() - 1);
-                // if let Some(f) = e.raw_output.rfind("\n") {
-                //     e.raw_output.truncate(f);
-                //     e.raw_output.push('\n');
-                // } else {
-                //     e.raw_output.clear();
-                // }
+            if line == "__End_OF_Command__" {
                 println!("break");
                 break;
             }
-            if n < skip-1 {
-                println!("skip {} {}", n, skip);
+            if n < skip {
+                println!("SKIP: {} {} = {:?}", n, skip, line);
                 e.raw_prompt.push_str(&line);
                 e.raw_prompt.push('\n');
                 n += 1;
                 continue;
             }
-            println!("1");
-            println!("2");
             e.raw_output.push_str(&line);
             e.raw_output.push('\n');
         }

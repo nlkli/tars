@@ -5,6 +5,8 @@ use crate::openai::models::{
 pub use manager::*;
 mod terminal;
 pub use terminal::TerminalTool;
+mod fs;
+pub use fs::FileSystemTool;
 
 pub trait Tool {
     fn name_space(&self) -> &[&str];
