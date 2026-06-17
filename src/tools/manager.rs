@@ -24,12 +24,14 @@ impl ToolCallError {
 #[derive(Default)]
 pub struct ToolManager {
     tools: VecDeque<Box<dyn super::Tool + Send>>,
+    // shared_state: HashMap<String, String>,
 }
 
 impl ToolManager {
     pub fn new() -> Self {
         Self {
             tools: VecDeque::new(),
+            // shared_state: HashMap::new(),
         }
     }
 

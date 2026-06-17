@@ -7,18 +7,21 @@ mod tools;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // let mut terminal = term::Terminal::spawn("zsh", |_| {})?;
+    // let mut terminal = term::Terminal::spawn("zsh", |_| {}, None)?;
     //
-    // let e = terminal.execute("pwd")?;
+    // let mut e = terminal.execute("uname -a")?;
     //
-    // println!("EEEEE = {:#?}", e);
+    // println!("ex = {:#?}", e);
+    // println!("plan = {:#?}", e.plain_output());
     //
     // return Ok(());
 
-    let terminal = term::Terminal::spawn("zsh", |_| {})?;
+    let terminal = term::Terminal::spawn("zsh", |_| {}, None)?;
     let terminal_tool = tools::TerminalTool::new(terminal, 4096, None);
+    let fs_tool = tools::FileSystemTool::new();
     let mut tm = tools::ToolManager::new();
     tm.add(terminal_tool);
+    tm.add(fs_tool);
 
     let client = openai::OpenaiClient::builder()
         .base_url("http://localhost:8080/v1")
@@ -31,8 +34,6 @@ async fn main() -> Result<()> {
     // let models = llama_client.models().await?;
     //
     // println!("{:?}", models);
-    //
-    // return Ok(());
 
     // OmniCoder-Claude-uncensored-V2-Q4_K_M
     // gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M

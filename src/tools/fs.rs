@@ -1,83 +1,126 @@
-use crate::openai::models::{ChatCompletionBuilder, ChatCompletionMessageToolCall};
+use crate::openai::models::{
+    ChatCompletionBuilder, ChatCompletionMessageParam, ChatCompletionMessageToolCall,
+    ChatCompletionTool, FunctionDefinition, FunctionToolCall,
+};
+use serde::Deserialize;
+use std::{fs, path::PathBuf};
 
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "error")]
-pub enum TerminalToolError {
-    InvalidArguments { message: String },
-    CommandExecution { message: String },
+#[derive(Debug, Clone)]
+pub enum FileSystemToolError<'a> {
+    InvalidArguments(&'a str),
+    FileWriteFailed(&'a str),
 }
 
-impl FileSystemError {
-    fn invalid_arguments(message: impl Into<String>) -> Self {
-        Self::InvalidArguments {
-            message: message.into(),
-        }
-    }
-
-    fn command_execution(message: impl Into<String>) -> Self {
-        Self::CommandExecution {
-            message: message.into(),
-        }
-    }
-
-    fn as_content(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+impl<'a> FileSystemToolError<'a> {
+    fn as_json_string(&self) -> String {
+        let error = match self {
+            Self::InvalidArguments(s) => format!("InvalidArguments: {s}"),
+            Self::FileWriteFailed(s) => format!("FileWriteFailed: {s}"),
+        };
+        serde_json::json!({
+            "error": error
+        })
+        .to_string()
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ExecuteTerminalCommandsArgs {
-    #[serde(default)]
-    pub commands: Option<Vec<String>>,
-    #[serde(default)]
-    pub command: Option<String>,
-    #[serde(default)]
-    pub silent: bool,
+#[derive(Debug, Deserialize)]
+pub struct WriteFileContentArgs {
+    // #[serde(default)]
+    pub path: String,
+    // #[serde(default)]
+    // pub abc_path: String,
+    pub content: String,
 }
 
-impl ExecuteTerminalCommandsArgs {
-    fn take_commands(&mut self) -> Option<Vec<String>> {
-        self.command
-            .take()
-            .map(|c| Vec::from([c]))
-            .or(self.commands.take())
-    }
-}
+// impl WriteFileContentArgs {
+//     fn extract_path() -> &str {
+//
+//     }
+// }
 
 impl super::Tool for FileSystemTool {
     fn name_space(&self) -> &[&str] {
-        &["execute_terminal_commands", "continue_output"]
+        &["write_file_content"]
     }
 
-    fn register(&self, builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
-        self.register(builder)
+    fn register(&self, mut builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
+        let write_file_content = FunctionDefinition {
+            name: "write_file_content".into(),
+            description: Some(
+                "Write content to a file at the specified absolute path. Creates the file if it does not exist and overwrites the entire file if it already exists. Absolute path to the file is a required parameter."
+                    .into(),
+            ),
+            parameters: Some(
+r#"{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Target file absolute path. Required."
+    },
+    "content": {
+      "type": "string",
+      "description": "Content to write into the file."
+    }
+  },
+  "required": ["path", "content"],
+  "additionalProperties": false
+}"#
+                .into(),
+            ),
+            strict: Some(true),
+        };
+        builder = builder.tool(ChatCompletionTool::function(write_file_content));
+        builder
     }
 
     fn call(&mut self, tc: &ChatCompletionMessageToolCall) -> Option<ChatCompletionMessageParam> {
-        self.call(tc)
+        match tc {
+            ChatCompletionMessageToolCall::Function { id, function } => {
+                self.call_function(id, function)
+            }
+            ChatCompletionMessageToolCall::Custom { .. } => unreachable!(),
+        }
     }
 }
 
-pub struct FileSystemTool {
-    // title: &'static str,
-    term: Terminal,
-    max_output_chunk_size: usize,
-    pending_output_chunks: VecDeque<String>,
-    execution_tx: Option<UnboundedSender<Execution>>,
-}
+pub struct FileSystemTool;
 
 impl FileSystemTool {
-    pub fn new(
-        t: Terminal,
-        max_output_chunk_size: usize,
-        execution_tx: Option<UnboundedSender<Execution>>,
-    ) -> Self {
-        Self {
-            term: t,
-            max_output_chunk_size,
-            pending_output_chunks: VecDeque::new(),
-            execution_tx,
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn call_function(
+        &self,
+        tool_call_id: &str,
+        fc: &FunctionToolCall,
+    ) -> Option<ChatCompletionMessageParam> {
+        if fc.name != "write_file_content" {
+            return None;
         }
+        let content = match serde_json::from_str::<WriteFileContentArgs>(&fc.arguments) {
+            Ok(args) => {
+                let mut path = std::path::PathBuf::from(&args.path);
+                if let Ok(p) = path.strip_prefix("~/") {
+                    if let Some(hd) = std::env::home_dir() {
+                        path = hd.join(p);
+                    }
+                }
+                if let Ok(p) = path.strip_prefix("$HOME/") {
+                    if let Some(hd) = std::env::home_dir() {
+                        path = hd.join(p);
+                    }
+                }
+                match fs::write(path, args.content) {
+                    Ok(_) => String::new(),
+                    Err(e) => FileSystemToolError::FileWriteFailed(&e.to_string()).as_json_string(),
+                }
+            }
+            Err(e) => FileSystemToolError::InvalidArguments(&e.to_string()).as_json_string(),
+        };
+
+        Some(ChatCompletionMessageParam::tool(content, tool_call_id))
     }
 }
