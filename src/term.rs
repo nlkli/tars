@@ -5,6 +5,7 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     sync::mpsc::{Receiver, channel},
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Clone, Default)]
@@ -12,6 +13,7 @@ pub struct Execution {
     pub command: String,
     pub raw_prompt: String,
     pub raw_output: String,
+    pub duration: Duration,
     plain_output: Option<String>,
 }
 
@@ -123,6 +125,14 @@ impl Terminal {
         })
     }
 
+    fn recv_line_with_timeout(&mut self, timeout: &Option<Duration>) -> Result<String> {
+        Ok(if let Some(t) = timeout {
+            self.line_rx.recv_timeout(*t)?
+        } else {
+            self.line_rx.recv()?
+        })
+    }
+
     pub fn pwd(&mut self) -> Result<PathBuf> {
         writeln!(self.writer, "pwd")?;
         self.writer.flush()?;
@@ -131,7 +141,8 @@ impl Terminal {
         Ok(PathBuf::from(self.line_rx.recv()?))
     }
 
-    pub fn execute(&mut self, command: &str) -> Result<Execution> {
+    pub fn execute(&mut self, command: &str, timeout: Option<Duration>) -> Result<Execution> {
+        let start = Instant::now();
         let mut e = Execution {
             command: command.into(),
             ..Default::default()
@@ -147,15 +158,16 @@ impl Terminal {
             self.writer.write(&[b'\n'])?;
             self.writer.write_all(line.as_bytes())?;
             self.writer.flush()?;
-            let _ = self.line_rx.recv()?;
+            let _ = self.recv_line_with_timeout(&timeout)?;
             skip += 1;
         }
         self.writer.write_all(EOC_PROMPT.as_bytes())?;
         self.writer.write(&[b'\n'])?;
         self.writer.flush()?;
-        let _ = self.line_rx.recv()?;
+        let _ = self.recv_line_with_timeout(&timeout)?;
         let mut n = 0;
-        while let Ok(line) = self.line_rx.recv() {
+        loop {
+            let line = self.recv_line_with_timeout(&timeout)?;
             if line == "__END_OF_COMMAND__" {
                 break;
             }
@@ -171,6 +183,7 @@ impl Terminal {
             e.raw_output.push_str(&line);
             e.raw_output.push('\n');
         }
+        e.duration = start.elapsed();
         Ok(e)
     }
 }

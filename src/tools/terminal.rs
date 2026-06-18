@@ -6,8 +6,10 @@ use crate::{
     term::{Execution, Terminal},
 };
 use serde::Deserialize;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
+
+const EXECUTE_TERMINAL_COMMANDS: &str = "";
 
 #[derive(Debug, Clone)]
 pub enum TerminalToolError<'a> {
@@ -15,7 +17,7 @@ pub enum TerminalToolError<'a> {
     CommandExecution(&'a str),
 }
 
-impl <'a>TerminalToolError<'a> {
+impl<'a> TerminalToolError<'a> {
     fn as_json_string(&self) -> String {
         let error = match self {
             Self::InvalidArguments(s) => format!("InvalidArguments: {s}"),
@@ -56,10 +58,9 @@ impl super::Tool for TerminalTool {
         let execute_terminal_commands = FunctionDefinition {
             name: "execute_terminal_commands".into(),
             description: Some(
-                "Execute one or more shell commands in the terminal. Set silent=true when output is not needed.".into(),
+                "Execute shell commands in a persistent terminal session. Commands are executed sequentially and may affect subsequent commands. Use the terminal to gather information and verify results instead of guessing. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input. Set silent=true when output is not needed.".into(),
             ),
-            parameters: Some(
-r#"{
+            parameters: Some(r#"{
   "type": "object",
   "properties": {
     "commands": {
@@ -67,11 +68,11 @@ r#"{
       "items": {
         "type": "string"
       },
-      "description": "Commands executed sequentially."
+      "description": "Shell commands executed sequentially."
     },
     "silent": {
       "type": "boolean",
-      "description": "When true, command output is suppressed."
+      "description": "Suppress command output when the result is not needed."
     }
   },
   "required": ["commands"],
@@ -84,7 +85,7 @@ r#"{
 
         let continue_output = FunctionDefinition {
             name: "continue_output".into(),
-            description: Some("Read the next chunk of output from the previous command when more_output_available=true.".into()),
+            description: Some("Read additional output from the previous terminal command when more_output_available=true.".into()),
             parameters: Some(
                 r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
             ),
@@ -110,6 +111,7 @@ pub struct TerminalTool {
     max_output_chunk_size: usize,
     pending_output_chunks: VecDeque<String>,
     execution_tx: Option<UnboundedSender<Execution>>,
+    execute_duration: Option<Duration>,
 }
 
 impl TerminalTool {
@@ -117,12 +119,14 @@ impl TerminalTool {
         term: Terminal,
         max_output_chunk_size: usize,
         execution_tx: Option<UnboundedSender<Execution>>,
+        execute_duration: Option<Duration>,
     ) -> Self {
         Self {
             term,
             max_output_chunk_size,
             pending_output_chunks: VecDeque::new(),
             execution_tx,
+            execute_duration
         }
     }
 
@@ -163,7 +167,7 @@ impl TerminalTool {
                             return Some(ChatCompletionMessageParam::tool(content, id));
                         };
                         for command in commands.iter() {
-                            match self.term.execute(command) {
+                            match self.term.execute(command, self.execute_duration) {
                                 Ok(mut ex) => {
                                     if let Some(ref tx) = self.execution_tx {
                                         let _ = tx.send(ex.clone());

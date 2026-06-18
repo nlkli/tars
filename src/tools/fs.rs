@@ -3,7 +3,7 @@ use crate::openai::models::{
     ChatCompletionTool, FunctionDefinition, FunctionToolCall,
 };
 use serde::Deserialize;
-use std::{fs, path::PathBuf};
+use std::fs;
 
 #[derive(Debug, Clone)]
 pub enum FileSystemToolError<'a> {
@@ -30,6 +30,7 @@ pub struct WriteFileContentArgs {
     pub path: String,
     // #[serde(default)]
     // pub abc_path: String,
+    #[serde(default)]
     pub content: String,
 }
 
@@ -48,16 +49,15 @@ impl super::Tool for FileSystemTool {
         let write_file_content = FunctionDefinition {
             name: "write_file_content".into(),
             description: Some(
-                "Write content to a file at the specified absolute path. Creates the file if it does not exist and overwrites the entire file if it already exists. Absolute path to the file is a required parameter."
+                "Write content to a file. 'path' is REQUIRED and must always be provided. Path must begin with '/' or '~/'. Never use relative paths. Do not call this tool if a valid path is not known. The file is created if it does not exist and fully overwritten if it exists."
                     .into(),
             ),
-            parameters: Some(
-r#"{
+            parameters: Some(r#"{
   "type": "object",
   "properties": {
     "path": {
       "type": "string",
-      "description": "Target file absolute path. Required."
+      "description": "REQUIRED. Absolute file path. Must start with '/' or '~/'."
     },
     "content": {
       "type": "string",
