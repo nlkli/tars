@@ -3,7 +3,8 @@ use crate::{
         ChatCompletionValue, OpenaiClient,
         models::{
             ChatCompletion, ChatCompletionChunkChoice, ChatCompletionMessage,
-            ChatCompletionMessageParam,
+            ChatCompletionMessageParam, ChatCompletionMessageToolCall, FINISH_REASON_TOOL_CALLS,
+            FunctionToolCall,
         },
     },
     tools::ToolManager,
@@ -27,6 +28,29 @@ pub struct Chat {
     tool_manager: ToolManager,
 }
 
+#[derive(Default)]
+struct StreamMessageBuffer {
+    role: Option<String>,
+    content: Option<String>,
+    tool_call: Option<ChatCompletionMessageToolCall>,
+}
+
+impl StreamMessageBuffer {
+    fn push_content(&mut self, content: String) {
+        match self.content.as_mut() {
+            Some(buf) => buf.push_str(&content),
+            None => self.content = Some(content),
+        }
+    }
+
+    fn take_message(&mut self) -> ChatCompletionMessageParam {
+        ChatCompletionMessageParam::new(
+            self.role.take().unwrap_or_default(),
+            self.content.take().unwrap_or_default(),
+        )
+    }
+}
+
 pub fn spawn_chat(
     chat: Chat,
 ) -> (
@@ -35,98 +59,174 @@ pub fn spawn_chat(
 ) {
     let chat = Arc::new(Mutex::new(chat));
 
-    let (chat_tx, mut chat_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (chat_tx, chat_rx) = tokio::sync::mpsc::unbounded_channel();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (completion_tx, mut conmpletion_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (completion_tx, completion_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    {
-        let chat = chat.clone();
-        let chat_tx = chat_tx.clone();
-        let event_tx = event_tx.clone();
+    spawn_completion_processor(chat.clone(), chat_tx.clone(), event_tx, completion_rx);
 
-        // let tool_cal
+    spawn_chat_worker(chat, chat_rx, completion_tx);
 
-        tokio::spawn(async move {
-            while let Some(cc_value) = conmpletion_rx.recv().await {
-                match cc_value {
-                    ChatCompletionValue::Chunk(chunk_result) => match chunk_result {
-                        Ok(mut chunk) => {
-                            let first_choice = chunk.choices.first_mut();
-                            if first_choice.is_none() {
-                                continue;
-                            }
-                            let first_choice = unsafe { first_choice.unwrap_unchecked() };
-                            let _ = event_tx
-                                .send(ChatEvent::ChunkChoice(Result::Ok(first_choice.clone())));
+    (chat_tx, event_rx)
+}
 
-                            // if let Some(tool_calls) = first_choice.delta.tool_calls.take() {
-                            //
-                            // }
-                        }
-                        Err(e) => {
-                            let _ = event_tx.send(ChatEvent::ChunkChoice(Result::Err(e)));
-                        }
-                    },
-                    ChatCompletionValue::Response(mut response) => {
-                        let first_message = response.choices.first_mut().map(|c| &mut c.message);
-                        if first_message.is_none() {
+fn spawn_completion_processor(
+    chat: Arc<Mutex<Chat>>,
+    chat_tx: UnboundedSender<Vec<ChatCompletionMessageParam>>,
+    event_tx: UnboundedSender<ChatEvent>,
+    mut completion_rx: UnboundedReceiver<ChatCompletionValue>,
+) {
+    tokio::spawn(async move {
+        let mut buffer = StreamMessageBuffer::default();
+
+        while let Some(value) = completion_rx.recv().await {
+            match value {
+                ChatCompletionValue::Chunk(chunk_result) => {
+                    let mut chunk = match chunk_result {
+                        Ok(chunk) => chunk,
+                        Err(err) => {
+                            let _ = event_tx.send(ChatEvent::ChunkChoice(Err(err)));
                             continue;
                         }
-                        let first_message = unsafe { first_message.unwrap_unchecked() };
-                        let _ = event_tx.send(ChatEvent::Message(first_message.clone()));
+                    };
 
-                        let mut chat_lock = chat.lock().await;
-                        if let Some(tool_calls) = first_message.tool_calls.take() {
-                            let tool_messages = tool_calls
-                                .iter()
-                                .map(|tc| chat_lock.tool_manager.call(tc))
-                                .collect::<Vec<_>>();
-                            chat_lock.completion.messages.push(
-                                ChatCompletionMessageParam::new(
-                                    &first_message.role,
-                                    first_message.content_or_default(),
-                                )
-                                .tool_calls(tool_calls),
-                            );
-                            let _ = chat_tx.send(tool_messages);
-                            drop(chat_lock);
-                            continue;
+                    let Some(choice) = chunk.choices.first_mut() else {
+                        continue;
+                    };
+
+                    let _ = event_tx.send(ChatEvent::ChunkChoice(Ok(choice.clone())));
+
+                    if let Some(role) = choice.delta.role.take() {
+                        if !role.is_empty() {
+                            buffer.role.replace(role);
                         }
-
-                        chat_lock
-                            .completion
-                            .messages
-                            .push(ChatCompletionMessageParam::new(
-                                &first_message.role,
-                                first_message.content_or_default(),
-                            ));
-
-                        drop(chat_lock);
                     }
+
+                    if let Some(content) = choice.delta.content.take() {
+                        buffer.push_content(content);
+                    }
+
+                    if let Some(mut tool_call) = choice
+                        .delta
+                        .tool_calls
+                        .take()
+                        .and_then(|calls| calls.into_iter().next())
+                    {
+                        if let Some(id) = tool_call.id.take() {
+                            buffer.tool_call = Some(ChatCompletionMessageToolCall::Function {
+                                id,
+                                function: FunctionToolCall {
+                                    name: tool_call
+                                        .function
+                                        .as_mut()
+                                        .and_then(|f| f.name.take())
+                                        .unwrap_or_default(),
+                                    ..Default::default()
+                                },
+                            });
+                        }
+
+                        if let Some(ChatCompletionMessageToolCall::Function { function, .. }) =
+                            &mut buffer.tool_call
+                        {
+                            function.arguments.push_str(
+                                &tool_call
+                                    .function
+                                    .as_mut()
+                                    .and_then(|f| f.arguments.take())
+                                    .unwrap_or_default(),
+                            );
+                        }
+                    }
+
+                    let Some(finish_reason) = &choice.finish_reason else {
+                        continue;
+                    };
+
+                    let mut chat = chat.lock().await;
+
+                    if finish_reason == FINISH_REASON_TOOL_CALLS {
+                        if let Some(tool_call) = buffer.tool_call.take() {
+                            let tool_message = chat.tool_manager.call(&tool_call);
+
+                            chat.completion
+                                .messages
+                                .push(buffer.take_message().tool_calls(vec![tool_call]));
+
+                            let _ = chat_tx.send(vec![tool_message]);
+                        }
+
+                        continue;
+                    }
+
+                    chat.completion.messages.push(buffer.take_message());
+                }
+
+                ChatCompletionValue::Response(mut response) => {
+                    let Some(message) = response.choices.first_mut().map(|c| &mut c.message) else {
+                        continue;
+                    };
+
+                    let _ = event_tx.send(ChatEvent::Message(message.clone()));
+
+                    let mut chat = chat.lock().await;
+
+                    if let Some(tool_calls) = message.tool_calls.take() {
+                        let tool_messages = tool_calls
+                            .iter()
+                            .map(|tc| chat.tool_manager.call(tc))
+                            .collect::<Vec<_>>();
+
+                        chat.completion.messages.push(
+                            ChatCompletionMessageParam::new(
+                                &message.role,
+                                message.content_or_default(),
+                            )
+                            .tool_calls(tool_calls),
+                        );
+
+                        let _ = chat_tx.send(tool_messages);
+                        continue;
+                    }
+
+                    chat.completion
+                        .messages
+                        .push(ChatCompletionMessageParam::new(
+                            &message.role,
+                            message.content_or_default(),
+                        ));
                 }
             }
-        });
-    }
+        }
+    });
+}
+
+fn spawn_chat_worker(
+    chat: Arc<Mutex<Chat>>,
+    mut chat_rx: UnboundedReceiver<Vec<ChatCompletionMessageParam>>,
+    completion_tx: UnboundedSender<ChatCompletionValue>,
+) {
     tokio::spawn(async move {
         while let Some(messages) = chat_rx.recv().await {
             if messages.is_empty() {
                 continue;
             }
-            let mut chat_lock = chat.lock().await;
-            chat_lock.completion.messages.extend_from_slice(&messages);
-            if let Err(e) = chat_lock
+
+            let mut chat = chat.lock().await;
+
+            chat.completion.messages.extend(messages);
+
+            println!("{:#?}", chat.completion.messages);
+
+            if let Err(err) = chat
                 .client
-                .create_chat_completion(&chat_lock.completion, completion_tx.clone())
+                .create_chat_completion(&chat.completion, completion_tx.clone())
                 .await
             {
-                eprintln!("ERROR: create_chat_completion: {}", e);
+                eprintln!("ERROR: create_chat_completion: {}", err);
             }
-
-            drop(chat_lock);
         }
-        println!("done");
     });
-    (chat_tx, event_rx)
 }
 
 impl Chat {

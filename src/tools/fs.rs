@@ -53,7 +53,7 @@ impl super::Tool for FileSystemTool {
         let write_file_content = FunctionDefinition {
             name: "write_file_content".into(),
             description: Some(
-                "Write content to a file. 'path' is REQUIRED and must always be provided. Path must begin with '/' or '~/'. Never use relative paths. Do not call this tool if a valid path is not known. The file is created if it does not exist and fully overwritten if it exists."
+                "Write content to a file. 'path' and 'content' is REQUIRED and must always be provided. Path must begin with '/' or '~/'. Never use relative paths. Do not call this tool if a valid path is not known. The file is created if it does not exist and fully overwritten if it exists."
                     .into(),
             ),
             parameters: Some(r#"{
@@ -65,7 +65,7 @@ impl super::Tool for FileSystemTool {
     },
     "content": {
       "type": "string",
-      "description": "Content to write into the file."
+      "description": "REQUIRED. Content to write into the file."
     }
   },
   "required": ["path", "content"],

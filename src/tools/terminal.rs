@@ -9,8 +9,6 @@ use serde::Deserialize;
 use std::{collections::VecDeque, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
 
-const EXECUTE_TERMINAL_COMMANDS: &str = "";
-
 #[derive(Debug, Clone)]
 pub enum TerminalToolError<'a> {
     InvalidArguments(&'a str),
@@ -59,24 +57,24 @@ impl super::Tool for TerminalTool {
     }
 
     fn register(&self, mut builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
-        let execute_terminal_commands = FunctionDefinition {
+        let execute_terminal_command = FunctionDefinition {
             name: "execute_terminal_command".into(),
             description: Some(
-                "Execute a shell command in a persistent terminal session. The command may affect the session state and influence subsequent executions. Use the terminal to gather information and verify results instead of guessing. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input. Set silent=true when output is not needed.".into(),
+                "Execute a shell command in a persistent terminal session. POSIX-compatible. The terminal state persists between calls. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input. Set silent=true when output is not needed.".into(),
             ),
             parameters: Some(r#"{
   "type": "object",
   "properties": {
     "command": {
       "type": "string",
-      "description": "Shell command to execute."
+      "description": "REQUIRED. Shell command to execute."
     },
     "silent": {
       "type": "boolean",
       "description": "Suppress command output when the result is not needed."
     }
   },
-  "required": ["commands"],
+  "required": ["command"],
   "additionalProperties": false
 }"#
                 .into(),
@@ -91,7 +89,7 @@ impl super::Tool for TerminalTool {
             ),
             strict: Some(true),
         };
-        builder = builder.tool(ChatCompletionTool::function(execute_terminal_commands));
+        builder = builder.tool(ChatCompletionTool::function(execute_terminal_command));
         builder = builder.tool(ChatCompletionTool::function(continue_output));
         builder
     }
@@ -153,7 +151,7 @@ impl TerminalTool {
     ) -> Option<ChatCompletionMessageParam> {
         let content: String;
         match f.name.as_str() {
-            "execute_terminal_commands" => {
+            "execute_terminal_command" => {
                 match serde_json::from_str::<ExecuteTerminalCommandsArgs>(&f.arguments) {
                     Ok(mut args) => {
                         let mut output = String::new();
