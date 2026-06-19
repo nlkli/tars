@@ -5,6 +5,8 @@ mod openai;
 mod term;
 mod tools;
 
+use std::io::Write;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // let mut terminal = term::Terminal::spawn("zsh", |_| {}, None)?;
@@ -45,6 +47,7 @@ async fn main() -> Result<()> {
     builder = tm.register_all(builder);
 
     let chat_completion = builder
+        .stream()
         .tool_choice(openai::models::ChatCompletionToolChoice::auto())
         .build();
 
@@ -67,8 +70,10 @@ clang -I/opt/homebrew/include -L/opt/homebrew/lib main.c -o $OUTPUT_NAME -lrayli
         openai::models::ChatCompletionMessageParam::user(prompt),
     ]));
 
+    let mut log_file = std::fs::File::create(".log")?;
     while let Some(e) = rx.recv().await {
-        println!("{:#?}", e);
+        // println!("{:#?}", e);
+        writeln!(log_file, "{:#?}", e)?;
     }
 
     Ok(())

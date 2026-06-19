@@ -41,7 +41,11 @@ pub struct WriteFileContentArgs {
 // }
 
 impl super::Tool for FileSystemTool {
-    fn name_space(&self) -> &[&str] {
+    fn name(&self) -> &str {
+        "FileSystem"
+    }
+
+    fn function_names(&self) -> &[&str] {
         &["write_file_content"]
     }
 

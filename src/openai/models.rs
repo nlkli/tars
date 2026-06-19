@@ -776,7 +776,7 @@ pub struct ChatCompletionChunkChoiceDelta {
     #[serde(default)]
     pub reasoning_content: Option<String>,
     #[serde(default)]
-    pub tool_calls: Vec<DeltaToolCalls>,
+    pub tool_calls: Option<Vec<DeltaToolCalls>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

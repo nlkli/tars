@@ -50,25 +50,26 @@ impl ExecuteTerminalCommandsArgs {
 }
 
 impl super::Tool for TerminalTool {
-    fn name_space(&self) -> &[&str] {
-        &["execute_terminal_commands", "continue_output"]
+    fn name(&self) -> &str {
+        "Terminal"
+    }
+
+    fn function_names(&self) -> &[&str] {
+        &["execute_terminal_command", "continue_terminal_output"]
     }
 
     fn register(&self, mut builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
         let execute_terminal_commands = FunctionDefinition {
-            name: "execute_terminal_commands".into(),
+            name: "execute_terminal_command".into(),
             description: Some(
-                "Execute shell commands in a persistent terminal session. Commands are executed sequentially and may affect subsequent commands. Use the terminal to gather information and verify results instead of guessing. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input. Set silent=true when output is not needed.".into(),
+                "Execute a shell command in a persistent terminal session. The command may affect the session state and influence subsequent executions. Use the terminal to gather information and verify results instead of guessing. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input. Set silent=true when output is not needed.".into(),
             ),
             parameters: Some(r#"{
   "type": "object",
   "properties": {
-    "commands": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Shell commands executed sequentially."
+    "command": {
+      "type": "string",
+      "description": "Shell command to execute."
     },
     "silent": {
       "type": "boolean",
@@ -82,9 +83,8 @@ impl super::Tool for TerminalTool {
             ),
             strict: Some(true),
         };
-
         let continue_output = FunctionDefinition {
-            name: "continue_output".into(),
+            name: "continue_terminal_output".into(),
             description: Some("Read additional output from the previous terminal command when more_output_available=true.".into()),
             parameters: Some(
                 r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
@@ -126,7 +126,7 @@ impl TerminalTool {
             max_output_chunk_size,
             pending_output_chunks: VecDeque::new(),
             execution_tx,
-            execute_duration
+            execute_duration,
         }
     }
 

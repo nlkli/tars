@@ -106,11 +106,6 @@ impl OpenaiClient {
         }
 
         if !completion.stream.unwrap_or_default() {
-            // let json = response.bytes().await?;
-            // let json_string = String::from_utf8_lossy(&json).to_string();
-            // println!("{}", json_string);
-            // let v = serde_json::from_str::<ChatCompletionResponse>(&json_string)?;
-            // let _ = tx.send(ChatCompletionValue::Response(v));
             tx.send(ChatCompletionValue::Response(
                 response.json::<ChatCompletionResponse>().await?,
             ))?;
