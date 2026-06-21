@@ -1,10 +1,11 @@
-use crate::openai::models::{
+use anyhow::Result;
+use llm_provider_models::{
     ChatCompletionBuilder, ChatCompletionMessageParam, ChatCompletionMessageToolCall,
 };
-use serde::Serialize;
-use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
+use std::{collections::VecDeque, fmt::Write};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolCallError {
     pub error: String,
 }
@@ -53,5 +54,13 @@ impl ToolManager {
             ToolCallError::tool_does_not_exist(tc.name()).as_content(),
             tc.id(),
         )
+    }
+
+    pub fn write_context(&mut self, w: &mut dyn Write) -> Result<()> {
+        writeln!(w, "# Context")?;
+        for tool in self.tools.iter_mut() {
+            tool.write_context(w)?;
+        }
+        Ok(())
     }
 }

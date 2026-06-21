@@ -1,12 +1,12 @@
-use crate::{
-    openai::models::{
-        ChatCompletionBuilder, ChatCompletionMessageParam, ChatCompletionMessageToolCall,
-        ChatCompletionTool, CustomToolCall, FunctionDefinition, FunctionToolCall,
-    },
-    term::{Execution, Terminal},
+use crate::term::{Execution, Terminal};
+use anyhow::Result;
+use llm_provider_models::{
+    ChatCompletionBuilder, ChatCompletionMessageParam, ChatCompletionMessageToolCall,
+    ChatCompletionTool, CustomToolCall, FunctionDefinition, FunctionToolCall,
 };
 use serde::Deserialize;
 use std::{collections::VecDeque, time::Duration};
+use sysinfo::System;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
@@ -60,7 +60,7 @@ impl super::Tool for TerminalTool {
         let execute_terminal_command = FunctionDefinition {
             name: "execute_terminal_command".into(),
             description: Some(
-                "Execute a shell command in a persistent terminal session. POSIX-compatible. The terminal state persists between calls. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input. Set silent=true when output is not needed.".into(),
+                "Execute a shell command in a persistent terminal session. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input.".into(),
             ),
             parameters: Some(r#"{
   "type": "object",
@@ -68,10 +68,6 @@ impl super::Tool for TerminalTool {
     "command": {
       "type": "string",
       "description": "REQUIRED. Shell command to execute."
-    },
-    "silent": {
-      "type": "boolean",
-      "description": "Suppress command output when the result is not needed."
     }
   },
   "required": ["command"],
@@ -101,6 +97,29 @@ impl super::Tool for TerminalTool {
             }
             ChatCompletionMessageToolCall::Custom { id, custom } => self.call_custom(id, custom),
         }
+    }
+
+    fn write_context(&mut self, w: &mut dyn std::fmt::Write) -> Result<()> {
+        writeln!(w, "## Terminal")?;
+        writeln!(
+            w,
+            "- Current working directory: {}",
+            self.term.pwd()?.to_string_lossy()
+        )?;
+        writeln!(w, "- Shell: {}", self.term.shell)?;
+        writeln!(
+            w,
+            "- Host name: {}",
+            System::host_name().unwrap_or("-".into())
+        )?;
+        writeln!(
+            w,
+            "- OS: {}",
+            System::long_os_version().unwrap_or("-".into())
+        )?;
+        writeln!(w, "- Kernel: {}", System::kernel_long_version())?;
+        writeln!(w, "- CPU Arch: {}", System::cpu_arch())?;
+        Ok(())
     }
 }
 

@@ -1,4 +1,5 @@
-use crate::openai::models::{
+use anyhow::Result;
+use llm_provider_models::{
     ChatCompletionBuilder, ChatCompletionMessageParam, ChatCompletionMessageToolCall,
     ChatCompletionTool, FunctionDefinition, FunctionToolCall,
 };
@@ -86,6 +87,10 @@ impl super::Tool for FileSystemTool {
             }
             ChatCompletionMessageToolCall::Custom { .. } => unreachable!(),
         }
+    }
+
+    fn write_context(&mut self, _w: &mut dyn std::fmt::Write) -> Result<()> {
+        Ok(())
     }
 }
 

@@ -1,31 +1,43 @@
 use crate::{
-    openai::{
-        ChatCompletionValue, OpenaiClient,
-        models::{
-            ChatCompletion, ChatCompletionChunkChoice, ChatCompletionMessage,
-            ChatCompletionMessageParam, ChatCompletionMessageToolCall, FINISH_REASON_TOOL_CALLS,
-            FunctionToolCall,
-        },
-    },
+    provider::{ChatCompletionOutput, ChatCompletionStream, ProviderClient},
     tools::ToolManager,
 };
 use anyhow::Result;
-use std::sync::Arc;
-use tokio::sync::{
-    Mutex,
-    mpsc::{UnboundedReceiver, UnboundedSender},
+use llm_provider_models::{
+    ChatCompletion, ChatCompletionChunkChoice, ChatCompletionMessage, ChatCompletionMessageParam,
+    ChatCompletionMessageToolCall, ChatCompletionResponse, FINISH_REASON_TOOL_CALLS,
+    FunctionToolCall,
 };
+// use std::error::Error;
+// use std::fmt;
+use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio_stream::StreamExt;
+
+type ChatSender = UnboundedSender<Vec<ChatCompletionMessageParam>>;
+type ChatEventSender = UnboundedSender<Result<ChatEvent>>;
+
+// type ChatReceiver = UnboundedReceiver<Vec<ChatCompletionMessageParam>>;
+// type ChatEventReceiver = UnboundedReceiver<Result<ChatEvent>>;
+
+// #[derive(Debug)]
+// enum ChatEventError {
+//     CreateChatCompletion(String),
+// }
+//
+// impl fmt::Display for ChatEventError {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         match self {
+//             Self::CreateChatCompletion(s) => write!(f, "CreateChatCompletionError: {s}"),
+//         }
+//     }
+// }
+//
+// impl Error for ChatEventError {}
 
 #[derive(Debug)]
 pub enum ChatEvent {
     Message(ChatCompletionMessage),
     ChunkChoice(Result<ChatCompletionChunkChoice>),
-}
-
-pub struct Chat {
-    client: OpenaiClient,
-    completion: ChatCompletion,
-    tool_manager: ToolManager,
 }
 
 #[derive(Default)]
@@ -43,195 +55,27 @@ impl StreamMessageBuffer {
         }
     }
 
-    fn take_message(&mut self) -> ChatCompletionMessageParam {
-        ChatCompletionMessageParam::new(
-            self.role.take().unwrap_or_default(),
-            self.content.take().unwrap_or_default(),
-        )
+    fn take_message_param(&mut self) -> Option<ChatCompletionMessageParam> {
+        if let Some(role) = self.role.take() {
+            return Some(ChatCompletionMessageParam::new(
+                role,
+                self.content.take().unwrap_or_default(),
+            ));
+        }
+        None
     }
 }
 
-pub fn spawn_chat(
-    chat: Chat,
-) -> (
-    UnboundedSender<Vec<ChatCompletionMessageParam>>,
-    UnboundedReceiver<ChatEvent>,
-) {
-    let chat = Arc::new(Mutex::new(chat));
-
-    let (chat_tx, chat_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (completion_tx, completion_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    spawn_completion_processor(chat.clone(), chat_tx.clone(), event_tx, completion_rx);
-
-    spawn_chat_worker(chat, chat_rx, completion_tx);
-
-    (chat_tx, event_rx)
-}
-
-fn spawn_completion_processor(
-    chat: Arc<Mutex<Chat>>,
-    chat_tx: UnboundedSender<Vec<ChatCompletionMessageParam>>,
-    event_tx: UnboundedSender<ChatEvent>,
-    mut completion_rx: UnboundedReceiver<ChatCompletionValue>,
-) {
-    tokio::spawn(async move {
-        let mut buffer = StreamMessageBuffer::default();
-
-        while let Some(value) = completion_rx.recv().await {
-            match value {
-                ChatCompletionValue::Chunk(chunk_result) => {
-                    let mut chunk = match chunk_result {
-                        Ok(chunk) => chunk,
-                        Err(err) => {
-                            let _ = event_tx.send(ChatEvent::ChunkChoice(Err(err)));
-                            continue;
-                        }
-                    };
-
-                    let Some(choice) = chunk.choices.first_mut() else {
-                        continue;
-                    };
-
-                    let _ = event_tx.send(ChatEvent::ChunkChoice(Ok(choice.clone())));
-
-                    if let Some(role) = choice.delta.role.take() {
-                        if !role.is_empty() {
-                            buffer.role.replace(role);
-                        }
-                    }
-
-                    if let Some(content) = choice.delta.content.take() {
-                        buffer.push_content(content);
-                    }
-
-                    if let Some(mut tool_call) = choice
-                        .delta
-                        .tool_calls
-                        .take()
-                        .and_then(|calls| calls.into_iter().next())
-                    {
-                        if let Some(id) = tool_call.id.take() {
-                            buffer.tool_call = Some(ChatCompletionMessageToolCall::Function {
-                                id,
-                                function: FunctionToolCall {
-                                    name: tool_call
-                                        .function
-                                        .as_mut()
-                                        .and_then(|f| f.name.take())
-                                        .unwrap_or_default(),
-                                    ..Default::default()
-                                },
-                            });
-                        }
-
-                        if let Some(ChatCompletionMessageToolCall::Function { function, .. }) =
-                            &mut buffer.tool_call
-                        {
-                            function.arguments.push_str(
-                                &tool_call
-                                    .function
-                                    .as_mut()
-                                    .and_then(|f| f.arguments.take())
-                                    .unwrap_or_default(),
-                            );
-                        }
-                    }
-
-                    let Some(finish_reason) = &choice.finish_reason else {
-                        continue;
-                    };
-
-                    let mut chat = chat.lock().await;
-
-                    if finish_reason == FINISH_REASON_TOOL_CALLS {
-                        if let Some(tool_call) = buffer.tool_call.take() {
-                            let tool_message = chat.tool_manager.call(&tool_call);
-
-                            chat.completion
-                                .messages
-                                .push(buffer.take_message().tool_calls(vec![tool_call]));
-
-                            let _ = chat_tx.send(vec![tool_message]);
-                        }
-
-                        continue;
-                    }
-
-                    chat.completion.messages.push(buffer.take_message());
-                }
-
-                ChatCompletionValue::Response(mut response) => {
-                    let Some(message) = response.choices.first_mut().map(|c| &mut c.message) else {
-                        continue;
-                    };
-
-                    let _ = event_tx.send(ChatEvent::Message(message.clone()));
-
-                    let mut chat = chat.lock().await;
-
-                    if let Some(tool_calls) = message.tool_calls.take() {
-                        let tool_messages = tool_calls
-                            .iter()
-                            .map(|tc| chat.tool_manager.call(tc))
-                            .collect::<Vec<_>>();
-
-                        chat.completion.messages.push(
-                            ChatCompletionMessageParam::new(
-                                &message.role,
-                                message.content_or_default(),
-                            )
-                            .tool_calls(tool_calls),
-                        );
-
-                        let _ = chat_tx.send(tool_messages);
-                        continue;
-                    }
-
-                    chat.completion
-                        .messages
-                        .push(ChatCompletionMessageParam::new(
-                            &message.role,
-                            message.content_or_default(),
-                        ));
-                }
-            }
-        }
-    });
-}
-
-fn spawn_chat_worker(
-    chat: Arc<Mutex<Chat>>,
-    mut chat_rx: UnboundedReceiver<Vec<ChatCompletionMessageParam>>,
-    completion_tx: UnboundedSender<ChatCompletionValue>,
-) {
-    tokio::spawn(async move {
-        while let Some(messages) = chat_rx.recv().await {
-            if messages.is_empty() {
-                continue;
-            }
-
-            let mut chat = chat.lock().await;
-
-            chat.completion.messages.extend(messages);
-
-            println!("{:#?}", chat.completion.messages);
-
-            if let Err(err) = chat
-                .client
-                .create_chat_completion(&chat.completion, completion_tx.clone())
-                .await
-            {
-                eprintln!("ERROR: create_chat_completion: {}", err);
-            }
-        }
-    });
+pub struct Chat {
+    client: ProviderClient,
+    completion: ChatCompletion,
+    tool_manager: ToolManager,
+    buffer: StreamMessageBuffer,
 }
 
 impl Chat {
     pub fn new(
-        client: OpenaiClient,
+        client: ProviderClient,
         chat_completion: ChatCompletion,
         tool_manager: ToolManager,
     ) -> Self {
@@ -239,6 +83,207 @@ impl Chat {
             client: client,
             completion: chat_completion,
             tool_manager,
+            buffer: StreamMessageBuffer::default(),
+        }
+    }
+
+    pub fn spawn(mut self, event_tx: ChatEventSender) -> ChatSender {
+        let (chat_tx, mut chat_rx) = mpsc::unbounded_channel::<Vec<ChatCompletionMessageParam>>();
+
+        {
+            let chat_tx = chat_tx.clone();
+
+            tokio::spawn(async move {
+                while let Some(messages) = chat_rx.recv().await {
+                    if messages.is_empty() {
+                        continue;
+                    }
+
+                    self.completion.messages.extend(messages);
+
+                    match self.client.create_chat_completion(&self.completion).await {
+                        Ok(output) => {
+                            if match output {
+                                ChatCompletionOutput::Stream(stream) => {
+                                    self.stream_handle(stream, &event_tx, &chat_tx).await
+                                }
+                                ChatCompletionOutput::Response(response) => {
+                                    self.response_handle(response, &event_tx, &chat_tx).await
+                                }
+                            } {
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            if event_tx.send(Err(e.into())).is_err() {
+                                return;
+                            }
+                        }
+                    };
+                }
+            });
+        }
+
+        chat_tx
+    }
+
+    async fn stream_handle(
+        &mut self,
+        mut stream: ChatCompletionStream,
+        event_tx: &ChatEventSender,
+        chat_tx: &ChatSender,
+    ) -> bool {
+        while let Some(chunk_result) = stream.next().await {
+            let mut chunk = match chunk_result {
+                Ok(chunk) => chunk,
+                Err(e) => return event_tx.send(Err(e.into())).is_err(),
+            };
+
+            // only first choice prosessing
+            // for choice in chunk.choices {}
+
+            let Some(choice) = chunk.choices.first_mut() else {
+                continue;
+            };
+
+            if event_tx
+                .send(Ok(ChatEvent::ChunkChoice(Ok(choice.clone()))))
+                .is_err()
+            {
+                return true;
+            }
+
+            if let Some(role) = choice.delta.role.take() {
+                if !role.is_empty() {
+                    self.buffer.role.replace(role);
+                }
+            }
+
+            if let Some(content) = choice.delta.content.take() {
+                self.buffer.push_content(content);
+            }
+
+            if let Some(mut tool_call) = choice
+                .delta
+                .tool_calls
+                .take()
+                .and_then(|calls| calls.into_iter().next())
+            {
+                if let Some(id) = tool_call.id.take() {
+                    self.buffer.tool_call = Some(ChatCompletionMessageToolCall::Function {
+                        id,
+                        function: FunctionToolCall {
+                            name: tool_call
+                                .function
+                                .as_mut()
+                                .and_then(|f| f.name.take())
+                                .unwrap_or_default(),
+                            ..Default::default()
+                        },
+                    });
+                }
+
+                if let Some(ChatCompletionMessageToolCall::Function { function, .. }) =
+                    &mut self.buffer.tool_call
+                {
+                    function.arguments.push_str(
+                        &tool_call
+                            .function
+                            .as_mut()
+                            .and_then(|f| f.arguments.take())
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+
+            let Some(finish_reason) = &choice.finish_reason else {
+                continue;
+            };
+
+            if finish_reason == FINISH_REASON_TOOL_CALLS {
+                if let Some(tool_call) = self.buffer.tool_call.take() {
+                    let tool_message = self.tool_manager.call(&tool_call);
+
+                    self.update_tools_context_system_message();
+
+                    if let Some(message_param) = self.buffer.take_message_param() {
+                        self.completion
+                            .messages
+                            .push(message_param.tool_calls(vec![tool_call]));
+                    }
+
+                    if chat_tx.send(vec![tool_message]).is_err() {
+                        return true;
+                    }
+                }
+
+                continue;
+            }
+
+            if let Some(message_param) = self.buffer.take_message_param() {
+                self.completion.messages.push(message_param);
+            }
+        }
+
+        false
+    }
+
+    async fn response_handle(
+        &mut self,
+        mut response: ChatCompletionResponse,
+        event_tx: &ChatEventSender,
+        chat_tx: &ChatSender,
+    ) -> bool {
+        let Some(message) = response.choices.first_mut().map(|c| &mut c.message) else {
+            return false;
+        };
+
+        if event_tx
+            .send(Ok(ChatEvent::Message(message.clone())))
+            .is_err()
+        {
+            return true;
+        }
+
+        if let Some(tool_calls) = message.tool_calls.take() {
+            let tool_messages = tool_calls
+                .iter()
+                .map(|tc| self.tool_manager.call(tc))
+                .collect::<Vec<_>>();
+
+            self.update_tools_context_system_message();
+
+            self.completion.messages.push(
+                ChatCompletionMessageParam::new(&message.role, message.content_or_default())
+                    .tool_calls(tool_calls),
+            );
+
+            return chat_tx.send(tool_messages).is_err();
+        }
+
+        self.completion
+            .messages
+            .push(ChatCompletionMessageParam::new(
+                &message.role,
+                message.content_or_default(),
+            ));
+
+        false
+    }
+
+    fn update_tools_context_system_message(&mut self) {
+        let mut tools_context_system_message_content = String::new();
+
+        let _ = self
+            .tool_manager
+            .write_context(&mut tools_context_system_message_content);
+
+        if let Some(tool_context_system_message) =
+            self.completion.messages.iter_mut().rfind(|m| m.is_system())
+        {
+            if let Some(content) = tool_context_system_message.as_mut_text_content() {
+                *content = tools_context_system_message_content;
+            }
         }
     }
 }
