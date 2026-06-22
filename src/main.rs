@@ -4,41 +4,25 @@ use llm_provider_models::{
     ChatCompletionToolChoice, FINISH_REASON_STOP,
 };
 mod chat;
+mod provider;
 mod term;
 mod tools;
-
-mod provider;
+mod tui;
+mod args;
+mod app;
+mod fuzzy;
+mod compleation;
 
 use std::io::Write;
 
+// OmniCoder-Claude-uncensored-V2-Q4_K_M
+// gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M
+// Qwopus3.5-9B-Coder-MTP-Q4_K_M
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // let mut terminal = term::Terminal::spawn("zsh".into(), |_| {}, None)?;
-
-    // let mut e1 = terminal.execute(r#"curl -s -X GET "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd""#, Some(Duration::from_secs(7)))?;
-    // let mut e2 = terminal.execute("ls", None)?;
-    // let mut e3 = terminal.execute("ls", None)?;
-
-    // println!("plan = {:#?}", e1);
-    // println!("plan = {:#?}", e1.plain_output());
-    // println!("plan = {:#?}", e2.plain_output());
-    // println!("plan = {:#?}", e3.plain_output());
-    //
-    // terminal.execute("cd Projects/tars/src", None)?;
-    //
-    // println!("pwd = {:#?}", terminal.pwd()?);
-    //
-    // let mut e = terminal.execute("cat main.rs", None)?;
-    //
-    // println!("ex = {:#?}", e);
-    // println!("plan = {:#?}", e.plain_output());
-    //
-    // println!("pwd = {:#?}", terminal.pwd()?);
-    //
-    // return Ok(());
-
     let terminal = term::Terminal::spawn("zsh".into(), |_| {}, None)?;
-    let terminal_tool = tools::TerminalTool::new(terminal, 2048, None, None);
+    let terminal_tool = tools::BaseTool::new(terminal, 2048, None, None);
     let fs_tool = tools::FileSystemTool::new();
     let mut tm = tools::ToolManager::new();
     tm.add(terminal_tool);
@@ -48,17 +32,10 @@ async fn main() -> Result<()> {
         .base_url("http://localhost:8080/v1")
         .build();
 
-    // let llama_client = llamacpp::Client::builder()
-    //     .base_url("http://localhost:8080/v1")
-    //     .build();
-    //
-    // let models = llama_client.models().await?;
-    //
-    // println!("{:?}", models);
+    let models = client.models().await?;
+    println!("{:?}", models);
 
-    // OmniCoder-Claude-uncensored-V2-Q4_K_M
-    // gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M
-    // Qwopus3.5-9B-Coder-MTP-Q4_K_M
+    return Ok(());
 
     let mut builder =
         ChatCompletion::builder().model("gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M");

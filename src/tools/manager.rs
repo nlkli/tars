@@ -22,6 +22,7 @@ impl ToolCallError {
     }
 }
 
+#[derive(Default)]
 pub struct ToolManager {
     tools: VecDeque<Box<dyn super::Tool + Send>>,
 }
@@ -38,9 +39,9 @@ impl ToolManager {
     }
 
     pub fn register_all(&self, mut builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
-        for tool in self.tools.iter() {
-            builder = tool.register(builder);
-        }
+        // for tool in self.tools.iter() {
+        //     builder = tool.register(builder);
+        // }
         builder
     }
 

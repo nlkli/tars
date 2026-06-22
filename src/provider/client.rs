@@ -120,7 +120,8 @@ impl Client {
         let response = self
             .call_api(
                 self.http_client
-                    .post(format!("{}/chat/completions", self.base_url)),
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .json(&completion),
             )
             .await?;
 

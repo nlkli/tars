@@ -1,8 +1,8 @@
 use crate::term::{Execution, Terminal};
 use anyhow::Result;
 use llm_provider_models::{
-    ChatCompletionBuilder, ChatCompletionMessageParam, ChatCompletionMessageToolCall,
-    ChatCompletionTool, CustomToolCall, FunctionDefinition, FunctionToolCall,
+    ChatCompletionMessageParam, ChatCompletionMessageToolCall, CustomToolCall, FunctionDefinition,
+    FunctionToolCall,
 };
 use serde::Deserialize;
 use std::{collections::VecDeque, time::Duration};
@@ -10,22 +10,34 @@ use sysinfo::System;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
-pub enum TerminalToolError<'a> {
+pub enum SystemToolErorr<'a> {
     InvalidArguments(&'a str),
     CommandExecution(&'a str),
+    FileWriteFailed(&'a str),
 }
 
-impl<'a> TerminalToolError<'a> {
+impl<'a> SystemToolErorr<'a> {
     fn as_json_string(&self) -> String {
         let error = match self {
             Self::InvalidArguments(s) => format!("InvalidArguments: {s}"),
             Self::CommandExecution(s) => format!("CommandExecution: {s}"),
+            Self::FileWriteFailed(s) => format!("FileWriteFailed: {s}"),
         };
         serde_json::json!({
             "error": error
         })
         .to_string()
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WriteFileContentArgs {
+    // #[serde(default)]
+    pub path: String,
+    // #[serde(default)]
+    // pub abc_path: String,
+    #[serde(default)]
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,22 +59,19 @@ impl ExecuteTerminalCommandsArgs {
     }
 }
 
-impl super::Tool for TerminalTool {
+impl super::Tool for SystemTool {
     fn name(&self) -> &str {
         "Terminal"
     }
 
-    fn function_names(&self) -> &[&str] {
-        &["execute_terminal_command", "continue_terminal_output"]
-    }
-
-    fn register(&self, mut builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
-        let execute_terminal_command = FunctionDefinition {
-            name: "execute_terminal_command".into(),
-            description: Some(
-                "Execute a shell command in a persistent terminal session. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input.".into(),
-            ),
-            parameters: Some(r#"{
+    fn functions(&self) -> Vec<FunctionDefinition> {
+        vec![
+            FunctionDefinition {
+                name: "execute_terminal_command".into(),
+                description: Some(
+                    "Execute a shell command in a persistent terminal session. Only run commands that terminate on their own. Never start interactive programs or commands that wait for input.".into(),
+                ),
+                parameters: Some(r#"{
   "type": "object",
   "properties": {
     "command": {
@@ -73,21 +82,44 @@ impl super::Tool for TerminalTool {
   "required": ["command"],
   "additionalProperties": false
 }"#
-                .into(),
-            ),
-            strict: Some(true),
-        };
-        let continue_output = FunctionDefinition {
-            name: "continue_terminal_output".into(),
-            description: Some("Read additional output from the previous terminal command when more_output_available=true.".into()),
-            parameters: Some(
-                r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
-            ),
-            strict: Some(true),
-        };
-        builder = builder.tool(ChatCompletionTool::function(execute_terminal_command));
-        builder = builder.tool(ChatCompletionTool::function(continue_output));
-        builder
+                    .into(),
+                ),
+                strict: Some(true),
+            },
+            FunctionDefinition {
+                name: "continue_terminal_output".into(),
+                description: Some("Read additional output from the previous terminal command when more_output_available=true.".into()),
+                parameters: Some(
+                    r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
+                ),
+                strict: Some(true),
+            },
+            FunctionDefinition {
+                name: "write_file_content".into(),
+                description: Some(
+                    "Write content to a file. 'path' and 'content' is REQUIRED and must always be provided. Path must begin with '/' or '~/'. Never use relative paths. Do not call this tool if a valid path is not known. The file is created if it does not exist and fully overwritten if it exists."
+                    .into(),
+                ),
+                parameters: Some(r#"{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "REQUIRED. Absolute file path. Must start with '/' or '~/'."
+    },
+    "content": {
+      "type": "string",
+      "description": "REQUIRED. Content to write into the file."
+    }
+  },
+  "required": ["path", "content"],
+  "additionalProperties": false
+}"#
+                    .into(),
+                ),
+                strict: Some(true),
+            }
+        ]
     }
 
     fn call(&mut self, tc: &ChatCompletionMessageToolCall) -> Option<ChatCompletionMessageParam> {
@@ -123,7 +155,7 @@ impl super::Tool for TerminalTool {
     }
 }
 
-pub struct TerminalTool {
+pub struct SystemTool {
     term: Terminal,
     max_output_chunk_size: usize,
     pending_output_chunks: VecDeque<String>,
@@ -131,7 +163,7 @@ pub struct TerminalTool {
     execute_duration: Option<Duration>,
 }
 
-impl TerminalTool {
+impl SystemTool {
     pub fn new(
         term: Terminal,
         max_output_chunk_size: usize,
@@ -175,7 +207,7 @@ impl TerminalTool {
                     Ok(mut args) => {
                         let mut output = String::new();
                         let Some(commands) = args.take_commands() else {
-                            content = TerminalToolError::InvalidArguments(
+                            content = SystemToolErorr::InvalidArguments(
                                 "missing field
                                     `commands`"
                                     .into(),
@@ -192,7 +224,7 @@ impl TerminalTool {
                                     output.push_str(ex.plain_output());
                                 }
                                 Err(e) => {
-                                    content = TerminalToolError::CommandExecution(&e.to_string())
+                                    content = SystemToolErorr::CommandExecution(&e.to_string())
                                         .as_json_string();
                                     return Some(ChatCompletionMessageParam::tool(content, id));
                                 }
@@ -210,13 +242,36 @@ impl TerminalTool {
                         content = self.next_output_chunk();
                     }
                     Err(e) => {
-                        content =
-                            TerminalToolError::InvalidArguments(&e.to_string()).as_json_string();
+                        content = SystemToolErorr::InvalidArguments(&e.to_string()).as_json_string();
                     }
                 }
             }
-            "continue_output" => {
+            "continue_terminal_output" => {
                 content = self.next_output_chunk();
+            }
+            "write_file_content" => {
+                content = match serde_json::from_str::<WriteFileContentArgs>(&f.arguments) {
+                    Ok(args) => {
+                        let mut path = std::path::PathBuf::from(&args.path);
+                        if let Ok(p) = path.strip_prefix("~/") {
+                            if let Some(hd) = std::env::home_dir() {
+                                path = hd.join(p);
+                            }
+                        }
+                        if let Ok(p) = path.strip_prefix("$HOME/") {
+                            if let Some(hd) = std::env::home_dir() {
+                                path = hd.join(p);
+                            }
+                        }
+                        match std::fs::write(path, args.content) {
+                            Ok(_) => String::new(),
+                            Err(e) => {
+                                SystemToolErorr::FileWriteFailed(&e.to_string()).as_json_string()
+                            }
+                        }
+                    }
+                    Err(e) => SystemToolErorr::InvalidArguments(&e.to_string()).as_json_string(),
+                };
             }
             _ => {
                 return None;

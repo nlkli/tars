@@ -5,7 +5,8 @@
 //!
 //! | Module | Contents |
 //! |---|---|
-//! | [`constants`] | String constants for roles, finish reasons, content-part types, etc. |
+//! | [`consts`] | String constants for roles, finish reasons, content-part types, etc. |
+//! | [`enums`] | Enums roles, finish reasons, content-part types, etc. |
 //! | [`message`] | Request message types: [`message::MessageParam`], [`message::ContentPart`], etc. |
 //! | [`tool`] | Tool definitions, tool-choice configuration, and tool-call types. |
 //! | [`completion`] | [`completion::ChatCompletion`] (request) and [`completion::ChatCompletionResponse`] (response). |
@@ -32,6 +33,7 @@
 
 pub mod completion;
 pub mod consts;
+pub mod enums;
 pub mod logprob;
 pub mod message;
 pub mod model;
@@ -47,6 +49,9 @@ pub mod llamacpp;
 
 // Constants
 pub use consts::*;
+
+// Enums
+// pub use enums::*;
 
 // Message types
 pub use message::{
