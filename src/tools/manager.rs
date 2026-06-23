@@ -1,9 +1,11 @@
 use anyhow::Result;
 use llm_provider_models::{
-    ChatCompletionBuilder, ChatCompletionMessageParam, ChatCompletionMessageToolCall,
+    ChatCompletionMessageParam, ChatCompletionMessageToolCall,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, fmt::Write};
+
+pub const EMPTY_TOOL_SYSTEM_CONTEXT: &str = "# Context";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolCallError {
@@ -24,7 +26,7 @@ impl ToolCallError {
 
 #[derive(Default)]
 pub struct ToolManager {
-    tools: VecDeque<Box<dyn super::Tool + Send>>,
+    pub tools: VecDeque<Box<dyn super::Tool + Send>>,
 }
 
 impl ToolManager {
@@ -36,13 +38,6 @@ impl ToolManager {
 
     pub fn add(&mut self, tool: impl super::Tool + Send + 'static) {
         self.tools.push_back(Box::new(tool));
-    }
-
-    pub fn register_all(&self, mut builder: ChatCompletionBuilder) -> ChatCompletionBuilder {
-        // for tool in self.tools.iter() {
-        //     builder = tool.register(builder);
-        // }
-        builder
     }
 
     pub fn call(&mut self, tc: &ChatCompletionMessageToolCall) -> ChatCompletionMessageParam {
@@ -58,7 +53,7 @@ impl ToolManager {
     }
 
     pub fn write_context(&mut self, w: &mut dyn Write) -> Result<()> {
-        writeln!(w, "# Context")?;
+        writeln!(w, "{}", EMPTY_TOOL_SYSTEM_CONTEXT)?;
         for tool in self.tools.iter_mut() {
             tool.write_context(w)?;
         }

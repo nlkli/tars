@@ -1,10 +1,10 @@
 use crate::{
+    compleation::ChatCompletionEx,
     provider::{ChatCompletionOutput, ChatCompletionStream, ProviderClient},
-    tools::ToolManager,
 };
 use anyhow::Result;
 use llm_provider_models::{
-    ChatCompletion, ChatCompletionChunkChoice, ChatCompletionMessage, ChatCompletionMessageParam,
+    ChatCompletionChunkChoice, ChatCompletionMessage, ChatCompletionMessageParam,
     ChatCompletionMessageToolCall, ChatCompletionResponse, FINISH_REASON_TOOL_CALLS,
     FunctionToolCall,
 };
@@ -52,21 +52,15 @@ impl MessageBuffer {
 /// Drives an agentic chat loop: sends completions, handles streaming, and dispatches tool calls.
 pub struct Chat {
     client: ProviderClient,
-    completion: ChatCompletion,
-    tool_manager: ToolManager,
+    completion: ChatCompletionEx,
     buffer: MessageBuffer,
 }
 
 impl Chat {
-    pub fn new(
-        client: ProviderClient,
-        completion: ChatCompletion,
-        tool_manager: ToolManager,
-    ) -> Self {
+    pub fn new(client: ProviderClient, completion: ChatCompletionEx) -> Self {
         Self {
             client,
             completion,
-            tool_manager,
             buffer: MessageBuffer::default(),
         }
     }
@@ -88,7 +82,7 @@ impl Chat {
 
                 self.completion.messages.extend(messages);
 
-                let result = self.client.create_chat_completion(&self.completion).await;
+                let result = self.client.create_chat_completion(&self.completion.chat_completion()).await;
 
                 let should_close = match result {
                     Ok(ChatCompletionOutput::Stream(stream)) => {
@@ -153,8 +147,8 @@ impl Chat {
 
             if finish_reason == FINISH_REASON_TOOL_CALLS {
                 if let Some(tool_call) = self.buffer.tool_call.take() {
-                    let tool_message = self.tool_manager.call(&tool_call);
-                    self.refresh_tools_system_message();
+                    // !TODO
+                    let tool_message = self.completion.tool_call(&tool_call).unwrap();
 
                     if let Some(param) = self.buffer.take_message_param() {
                         self.completion
@@ -238,12 +232,11 @@ impl Chat {
         }
 
         if let Some(tool_calls) = message.tool_calls.take() {
+            // !TODO
             let tool_messages = tool_calls
                 .iter()
-                .map(|tc| self.tool_manager.call(tc))
+                .map(|tc| self.completion.tool_call(tc).unwrap())
                 .collect::<Vec<_>>();
-
-            self.refresh_tools_system_message();
 
             self.completion.messages.push(
                 ChatCompletionMessageParam::new(&message.role, message.content_or_default())
@@ -261,17 +254,5 @@ impl Chat {
             ));
 
         false
-    }
-
-    /// Overwrites the most recent system message with current tool context.
-    fn refresh_tools_system_message(&mut self) {
-        let mut context = String::new();
-        let _ = self.tool_manager.write_context(&mut context);
-
-        if let Some(system_msg) = self.completion.messages.iter_mut().rfind(|m| m.is_system()) {
-            if let Some(content) = system_msg.as_mut_text_content() {
-                *content = context;
-            }
-        }
     }
 }

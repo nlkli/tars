@@ -1,7 +1,13 @@
-use llm_provider_models::{ChatCompletion, ChatCompletionBuilder, MessageParam, enums::ReasoningEffort};
-use std::ops::{Deref, DerefMut};
-use crate::{term::Terminal, tools::{SystemTool, ToolManager}};
+use crate::{
+    term::Terminal,
+    tools::{EMPTY_TOOL_SYSTEM_CONTEXT, SystemTool, ToolManager},
+};
 use anyhow::Result;
+use llm_provider_models::{
+    ChatCompletion, ChatCompletionBuilder, MessageParam, Tool, ToolCall, ToolChoice,
+    enums::ReasoningEffort,
+};
+use std::ops::{Deref, DerefMut};
 
 #[derive(Default)]
 pub struct ChatCompletionExBuilder {
@@ -11,12 +17,13 @@ pub struct ChatCompletionExBuilder {
 
 impl ChatCompletionExBuilder {
     pub fn with_system_tool(mut self, terminal: Terminal, max_output_chunk_size: usize) -> Self {
-        self.tool_manager.add(SystemTool::new(
-                terminal,
-                max_output_chunk_size,
-                None,
-                None,
-        ));
+        self.tool_manager
+            .add(SystemTool::new(terminal, max_output_chunk_size, None, None));
+        self
+    }
+
+    pub fn tool_choice(mut self, choice: ToolChoice) -> Self {
+        self.inner_builder = self.inner_builder.tool_choice(choice);
         self
     }
 
@@ -57,8 +64,13 @@ impl ChatCompletionExBuilder {
     }
 
     pub fn build(mut self) -> Result<ChatCompletionEx> {
+        for tool in self.tool_manager.tools.iter() {
+            for f in tool.functions() {
+                self.inner_builder = self.inner_builder.tool(Tool::function(f));
+            }
+        }
         let mut system_context = String::new();
-        self.tool_manager.write_context(&mut system_context);
+        self.tool_manager.write_context(&mut system_context)?;
         Ok(ChatCompletionEx {
             inner: self.inner_builder.build(),
             tool_manager: self.tool_manager,
@@ -67,11 +79,11 @@ impl ChatCompletionExBuilder {
     }
 }
 
-pub struct ChatCompletionEx{
+pub struct ChatCompletionEx {
     inner: ChatCompletion,
     tool_manager: ToolManager,
     system_context: String,
-};
+}
 
 impl Deref for ChatCompletionEx {
     type Target = ChatCompletion;
@@ -90,5 +102,29 @@ impl DerefMut for ChatCompletionEx {
 impl ChatCompletionEx {
     pub fn builder() -> ChatCompletionExBuilder {
         ChatCompletionExBuilder::default()
+    }
+
+    pub fn chat_completion(&self) -> ChatCompletion {
+        let mut cc = self.inner.clone();
+        if !self.system_context.is_empty() && self.system_context != EMPTY_TOOL_SYSTEM_CONTEXT {
+            cc.messages.push(MessageParam::system(&self.system_context));
+        }
+        cc
+    }
+
+    pub fn tool_call(&mut self, tc: &ToolCall) -> Result<MessageParam> {
+        let mp = self.tool_manager.call(tc);
+        self.system_context.clear();
+        self.tool_manager.write_context(&mut self.system_context)?;
+        Ok(mp)
+    }
+
+    pub fn clear(&mut self) {
+        self.messages.retain(|m| m.is_system());
+    }
+
+    pub async fn save_messages(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let contents = serde_json::to_string_pretty(&self.messages)?;
+        Ok(tokio::fs::write(path, contents).await?)
     }
 }

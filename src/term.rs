@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     path::PathBuf,
-    sync::mpsc::{Receiver, channel},
+    sync::mpsc::{Receiver, TryRecvError, channel},
     time::{Duration, Instant},
 };
 
@@ -22,7 +22,7 @@ impl Execution {
     pub fn plain_output(&mut self) -> &str {
         self.plain_output
             .get_or_insert(strip_ansi_escapes::strip_str(
-                self.raw_output.replace("\t", "  "),
+                self.raw_output.replace("\t", " "),
             ))
     }
 
@@ -46,8 +46,8 @@ pub struct Terminal {
     _child_thread: std::thread::JoinHandle<()>,
 }
 
-const ROWS: u16 = 30;
-const COLS: u16 = 90;
+const ROWS: u16 = 40;
+const COLS: u16 = 120;
 
 impl Terminal {
     pub fn spawn<F>(
@@ -157,17 +157,18 @@ impl Terminal {
         }
     }
 
-    // fn drain_line_rx(&mut self) {
-    //     loop {
-    //         match self.line_rx.try_recv() {
-    //             Ok(_) => {}
-    //             Err(TryRecvError::Empty) => break,
-    //             Err(TryRecvError::Disconnected) => break,
-    //         }
-    //     }
-    // }
+    fn drain_line_rx(&mut self) {
+        loop {
+            match self.line_rx.try_recv() {
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
 
     pub fn execute(&mut self, command: &str, timeout: Option<Duration>) -> Result<Execution> {
+        self.drain_line_rx();
         let start = Instant::now();
         let mut e = Execution {
             command: command.into(),
@@ -185,14 +186,15 @@ impl Terminal {
             self.writer.write(&[b'\n'])?;
             self.writer.write_all(line.as_bytes())?;
             self.writer.flush()?;
-            let _ = self.recv_line_with_timeout(&timeout)?;
             skip += 1;
         }
         self.writer.write_all(EOC_PROMPT.as_bytes())?;
         self.writer.write(&[b'\n'])?;
         self.writer.flush()?;
-        let _ = self.recv_line_with_timeout(&timeout)?;
         let mut n = 0;
+        if !self.recv_line_with_timeout(&timeout)?.ends_with(EOC_MARKER) {
+            n += 1;
+        }
         loop {
             let line = self.recv_line_with_timeout(&timeout)?;
             if line.ends_with(EOC_MARKER) {

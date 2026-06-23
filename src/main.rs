@@ -1,76 +1,71 @@
 use anyhow::Result;
 use llm_provider_models::{
-    ChatCompletion, ChatCompletionChunkChoiceDelta, ChatCompletionMessageParam,
-    ChatCompletionToolChoice, FINISH_REASON_STOP,
+    ChatCompletionChunkChoiceDelta, ChatCompletionMessageParam, FINISH_REASON_STOP,
 };
+mod app;
+mod args;
 mod chat;
+mod compleation;
+mod fuzzy;
 mod provider;
 mod term;
 mod tools;
-mod tui;
-mod args;
-mod app;
-mod fuzzy;
-mod compleation;
 
-use std::io::Write;
+mod tui;
+
+use std::io::{Read, Write};
+
+use crate::tui::Sgr;
 
 // OmniCoder-Claude-uncensored-V2-Q4_K_M
 // gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M
 // Qwopus3.5-9B-Coder-MTP-Q4_K_M
 
+fn input() -> Result<String> {
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+
+    write!(stdout, "\n\n: ")?;
+    stdout.flush()?;
+
+    let mut prompt = String::new();
+
+    loop {
+        let mut line = String::new();
+        stdin.read_line(&mut line)?;
+        prompt.push_str(line.trim_end());
+        if line.trim_end() == "." {
+            break;
+        }
+        prompt.push('\n');
+    }
+
+    writeln!(stdout)?;
+
+    Ok(prompt)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let terminal = term::Terminal::spawn("zsh".into(), |_| {}, None)?;
-    let terminal_tool = tools::BaseTool::new(terminal, 2048, None, None);
-    let fs_tool = tools::FileSystemTool::new();
-    let mut tm = tools::ToolManager::new();
-    tm.add(terminal_tool);
-    tm.add(fs_tool);
+    let t = term::Terminal::spawn("zsh".into(), |_| {}, None)?;
+
+    let chat_completion_ex = compleation::ChatCompletionEx::builder()
+        .with_system_tool(t, 2048)
+        .model("gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M")
+        .tool_choice(llm_provider_models::ToolChoice::auto())
+        .stream()
+        .build()?;
 
     let client = provider::Client::builder()
         .base_url("http://localhost:8080/v1")
         .build();
 
-    let models = client.models().await?;
-    println!("{:?}", models);
-
-    return Ok(());
-
-    let mut builder =
-        ChatCompletion::builder().model("gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M");
-
-    builder = tm.register_all(builder);
-
-    let chat_completion = builder
-        .stream()
-        .tool_choice(ChatCompletionToolChoice::auto())
-        .build();
-
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let chat_tx = chat::Chat::new(client, chat_completion, tm).spawn(event_tx);
-
-    //     let prompt = r#"
-    // Напиши самую простую демку используя язык c и библиотеку raylib. Демка должна быть интересная и с
-    // движением. Проект демки должен находится на
-    // рабочем столе ~/Desktop/...  Создай папку проекта. raylib установлен через brew. создай build.sh скрипт для
-    // сборки. Не забудь перейти в директорию проекта для сборки. Используй верный путь для линковки raylib.
-    // # Компиляция и линковка для macOS (Apple Silicon/arm64).
-    // # Добавляем пути к заголовочным файлам и библиотекам Homebrew
-    // clang -I/opt/homebrew/include -L/opt/homebrew/lib main.c -o $OUTPUT_NAME -lraylib -framework OpenGL -framework Cocoa -framework CoreVideo -framework IOKit
-    // Сделай скрипт сборки исполняемым и запусти его. Код и все комментарии должны быть на английском.
-    // Все должно работать исправно! Запусти программу после готовности.
-    //         "#;
-
-    let stdin = std::io::stdin();
+    let chat_tx = chat::Chat::new(client, chat_completion_ex).spawn(event_tx);
 
     let mut stdout = std::io::stdout();
 
-    let _ = write!(stdout, ": ");
-    let _ = stdout.flush();
-
-    let mut prompt = String::new();
-    stdin.read_line(&mut prompt)?;
+    let prompt = input()?;
     let _ = chat_tx.send(Vec::from([ChatCompletionMessageParam::user(prompt)]));
 
     let mut prev_delta = ChatCompletionChunkChoiceDelta::default();
@@ -82,78 +77,87 @@ async fn main() -> Result<()> {
         match event {
             chat::ChatEvent::Message(_message) => todo!(),
             chat::ChatEvent::ChunkChoice(chunk_choice_result) => {
-                // Skip invalid chunks.
-                let Ok(chunk_choice) = chunk_choice_result else {
-                    continue;
+                let chunk_choice = match chunk_choice_result {
+                    Ok(chunk_choice) => chunk_choice,
+                    Err(e) => {
+                        writeln!(
+                            stdout,
+                            "{}{}{}\n",
+                            Sgr::Red.esc(),
+                            e.to_string(),
+                            Sgr::Reset.esc(),
+                        )?;
+                        stdout.flush()?;
+                        continue;
+                    }
                 };
 
-                let mut delta = chunk_choice.delta;
+                let delta = chunk_choice.delta;
 
                 if delta.reasoning_content.is_some() && prev_delta.reasoning_content.is_none() {
-                    let _ = stdout.write_all(b"\x1b[34m");
+                    write!(stdout, "{}", Sgr::Blue.esc())?;
                 }
                 if delta.reasoning_content.is_none() && prev_delta.reasoning_content.is_some() {
-                    let _ = stdout.write_all(b"\x1b[0m");
-                    let _ = stdout.write_all(b"\n\n");
+                    write!(stdout, "{}\n\n", Sgr::Reset.esc())?;
                 }
 
                 if delta.tool_calls.is_some() && prev_delta.tool_calls.is_none() {
-                    let _ = stdout.write_all(b"\x1b[35m");
+                    write!(stdout, "{}", Sgr::Magenta.esc())?;
                 }
                 if delta.tool_calls.is_none() && prev_delta.tool_calls.is_some() {
-                    let _ = stdout.write_all(b"\x1b[0m");
-                    let _ = stdout.write_all(b"\n");
+                    write!(stdout, "{}\n\n", Sgr::Reset.esc())?;
                 }
 
                 // Print role if present.
                 if let Some(role) = &delta.role {
-                    let _ = writeln!(stdout, "\n\x1b[32m{role}:\x1b[0m");
+                    writeln!(stdout, "{}{role}{}", Sgr::Green.esc(), Sgr::Reset.esc())?;
                 }
 
                 // Print assistant content.
                 if let Some(content) = &delta.content {
-                    let _ = stdout.write_all(content.as_bytes());
+                    write!(stdout, "{content}")?;
                 }
 
                 // Print reasoning content.
-                if let Some(reasoning) = &delta.reasoning_content {
-                    let _ = stdout.write_all(reasoning.as_bytes());
+                if let Some(reasoning_content) = &delta.reasoning_content {
+                    write!(stdout, "{reasoning_content}")?;
                 }
 
                 // Print tool name when a new tool call starts.
-                if let Some(tool_call) = delta.tool_calls.take().and_then(|v| v.into_iter().next())
+                if let Some(tool_call) = delta.tool_calls.as_ref().and_then(|v| v.into_iter().next())
                 {
                     if tool_call.id.is_some() {
-                        if let Some(function) = &tool_call.function {
-                            if let Some(name) = &function.name {
-                                let _ = writeln!(stdout, "{name}");
-                            }
+                        if let Some(name) =
+                            tool_call.function.as_ref().and_then(|f| f.name.as_ref())
+                        {
+                            writeln!(stdout, "{name}")?;
                         }
                     }
 
                     // Stream tool arguments.
-                    if let Some(function) = &tool_call.function {
-                        if let Some(args) = &function.arguments {
-                            let _ = stdout.write_all(args.as_bytes());
-                        }
+                    if let Some(args) = tool_call
+                        .function
+                        .as_ref()
+                        .and_then(|f| f.arguments.as_ref())
+                    {
+                        write!(stdout, "{args}")?;
                     }
                 }
 
                 // Print separator when generation is finished.
                 if let Some(ref finish_reason) = chunk_choice.finish_reason {
-                    let _ = stdout.write_all(b"\n-----\n");
-
                     if finish_reason == FINISH_REASON_STOP {
-                        let _ = write!(stdout, ": ");
-                        let _ = stdout.flush();
-                        let mut prompt = String::new();
-                        stdin.read_line(&mut prompt)?;
-                        let _ = chat_tx.send(Vec::from([ChatCompletionMessageParam::user(prompt)]));
-                        let _ = stdout.write_all(b"\n");
+                        let prompt = input()?;
+                        if chat_tx
+                            .send(Vec::from([ChatCompletionMessageParam::user(prompt)]))
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
 
-                let _ = stdout.flush();
+                stdout.flush()?;
                 prev_delta = delta;
             }
         }
