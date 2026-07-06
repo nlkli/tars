@@ -270,7 +270,7 @@ impl Chat {
     }
 }
 
-fn prompt_input() -> Result<String> {
+async fn input(chat: Arc<Mutex<Chat>>) -> Result<String> {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
 
@@ -282,13 +282,27 @@ fn prompt_input() -> Result<String> {
     loop {
         let mut line = String::new();
         stdin.read_line(&mut line)?;
-        prompt.push_str(line.trim_end());
-        if line.trim_end() == "." {
-            write!(stdout, "\x1B[1A\x1B[2K\r")?;
-            stdout.flush()?;
-            break;
+        match line.as_str().trim_end() {
+            "/clear" => {
+                chat.lock().await.completion.clear();
+                write!(stdout, "> ")?;
+                stdout.flush()?;
+            }
+            "/undo" => {
+                let _ = chat.lock().await.completion.undo_user_message();
+                write!(stdout, "> ")?;
+                stdout.flush()?;
+            }
+            _ => {
+                prompt.push_str(line.trim_end());
+                if line.trim_end() == "." {
+                    write!(stdout, "\x1B[1A\x1B[2K\r")?;
+                    stdout.flush()?;
+                    break;
+                }
+                prompt.push('\n');
+            }
         }
-        prompt.push('\n');
     }
 
     writeln!(stdout)?;
@@ -296,6 +310,7 @@ fn prompt_input() -> Result<String> {
     Ok(prompt)
 }
 
+// :TODO
 pub async fn run_interactive_chat(
     client: ProviderClient,
     completion: ChatCompletionEx,
@@ -309,11 +324,14 @@ pub async fn run_interactive_chat(
 
     if let Some(last_message) = chat_lock.completion.messages.last() {
         if !last_message.is_user() {
-            let prompt = prompt_input()?;
+            let prompt = input(chat.clone()).await?;
             chat_tx.send(vec![ChatCompletionMessageParam::user(prompt)])?;
         } else {
             chat_tx.send(vec![])?;
         }
+    } else {
+        let prompt = input(chat.clone()).await?;
+        chat_tx.send(vec![ChatCompletionMessageParam::user(prompt)])?;
     }
 
     drop(chat_lock);
@@ -430,7 +448,7 @@ pub async fn run_interactive_chat(
                 if let Some(ref finish_reason) = chunk_choice.finish_reason {
                     if finish_reason == FINISH_REASON_STOP {
                         write!(stdout, "\n\n")?;
-                        let prompt = prompt_input()?;
+                        let prompt = input(chat.clone()).await?;
                         if chat_tx
                             .send(Vec::from([ChatCompletionMessageParam::user(prompt)]))
                             .is_err()

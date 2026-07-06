@@ -40,15 +40,26 @@ impl SystemToolError {
 
 #[derive(Debug, Deserialize)]
 pub struct WriteFileContentArgs {
+    #[serde(default)]
     pub path: String,
     #[serde(default)]
+    pub file_path: String,
+    #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub append: bool,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct AppendFileContentArgs {
-    pub path: String,
-    pub content: String,
+impl WriteFileContentArgs {
+    fn extract_path(&self) -> Option<&str> {
+        if !self.path.is_empty() {
+            return Some(&self.path);
+        }
+        if !self.file_path.is_empty() {
+            return Some(&self.file_path);
+        }
+        None
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,7 +128,8 @@ fn tool_write_file_content() -> FunctionDefinition {
     FunctionDefinition {
         name: "write_file_content".into(),
         description: Some(
-            "Write content to a file, fully replacing existing contents. \
+            "Write content to a file. Fully replaces existing contents by default; \
+set append=true to add to the end instead. \
 Creates the file if it does not exist. Always provide the complete intended file content."
                 .into(),
         ),
@@ -131,38 +143,11 @@ Creates the file if it does not exist. Always provide the complete intended file
     },
     "content": {
       "type": "string",
-      "description": "REQUIRED. Complete file content to write. Fully replaces any existing content."
-    }
-  },
-  "required": ["path", "content"],
-  "additionalProperties": false
-}"#
-            .into(),
-        ),
-        strict: Some(true),
-    }
-}
-
-fn tool_append_file_content() -> FunctionDefinition {
-    FunctionDefinition {
-        name: "append_file_content".into(),
-        description: Some(
-            "Append content to the end of a file. Creates the file if it does not exist. \
-Existing content is preserved. Use instead of write_file_content when adding to a file \
-without reading it first (logs, config entries, etc.)."
-                .into(),
-        ),
-        parameters: Some(
-            r#"{
-  "type": "object",
-  "properties": {
-    "path": {
-      "type": "string",
-      "description": "Absolute or relative path to the target file. Parent directories must exist."
+      "description": "REQUIRED. Complete file content to write."
     },
-    "content": {
-      "type": "string",
-      "description": "Content to append. Written exactly as provided — include a leading newline if needed."
+    "append": {
+      "type": "bool",
+      "description": "If true, content is appended to the end of the file. Default: false."
     }
   },
   "required": ["path", "content"],
@@ -279,27 +264,34 @@ impl SystemTool {
             Ok(a) => a,
             Err(e) => return SystemToolError::InvalidArguments(e.to_string()).to_json(),
         };
-        let path = self.resolve_path(&args.path);
-        match std::fs::write(&path, &args.content) {
-            Ok(_) => String::new(),
-            Err(e) => SystemToolError::FileWriteFailed { path, source: e }.to_json(),
-        }
-    }
-
-    fn handle_append_file_content(&mut self, args_str: &str) -> String {
-        let args = match serde_json::from_str::<AppendFileContentArgs>(args_str) {
-            Ok(a) => a,
-            Err(e) => return SystemToolError::InvalidArguments(e.to_string()).to_json(),
+        let path = match args.extract_path() {
+            Some(p) => self.resolve_path(p),
+            None => {
+                return SystemToolError::InvalidArguments("missing required field `path`".into())
+                    .to_json();
+            }
         };
-        let path = self.resolve_path(&args.path);
-        match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .and_then(|mut f| io::Write::write_all(&mut f, args.content.as_bytes()))
-        {
+
+        let result = if args.append {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .and_then(|mut f| io::Write::write_all(&mut f, args.content.as_bytes()))
+                .map_err(|e| SystemToolError::FileAppendFailed {
+                    path: path.clone(),
+                    source: e,
+                })
+        } else {
+            std::fs::write(&path, &args.content).map_err(|e| SystemToolError::FileWriteFailed {
+                path: path.clone(),
+                source: e,
+            })
+        };
+
+        match result {
             Ok(_) => String::new(),
-            Err(e) => SystemToolError::FileAppendFailed { path, source: e }.to_json(),
+            Err(e) => e.to_json(),
         }
     }
 }
@@ -314,7 +306,6 @@ impl super::Tool for SystemTool {
             tool_execute_terminal_command(),
             tool_continue_terminal_output(),
             tool_write_file_content(),
-            tool_append_file_content(),
         ]
     }
 
@@ -354,7 +345,6 @@ impl SystemTool {
             "execute_terminal_command" => self.handle_execute_terminal_command(&f.arguments),
             "continue_terminal_output" => self.next_output_chunk(),
             "write_file_content" => self.handle_write_file_content(&f.arguments),
-            "append_file_content" => self.handle_append_file_content(&f.arguments),
             _ => return None,
         };
         Some(ChatCompletionMessageParam::tool(content, id))

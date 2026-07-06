@@ -123,6 +123,17 @@ impl ChatCompletionEx {
         self.messages.retain(|m| m.is_system());
     }
 
+    pub fn undo_user_message(&mut self) -> Option<MessageParam> {
+        if let Some(_) = self.messages.iter().find(|m| m.is_user()) {
+            while let Some(m) = self.messages.pop() {
+                if m.is_user() {
+                    return Some(m);
+                }
+            }
+        }
+        None
+    }
+
     pub async fn save_messages(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
         let contents = serde_json::to_string_pretty(&self.messages)?;
         Ok(tokio::fs::write(path, contents).await?)

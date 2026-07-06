@@ -1,7 +1,10 @@
 use crate::{compleation::ChatCompletionEx, fuzzy, provider::ProviderClient, term::Terminal};
 use anyhow::Result;
 use llm_provider_models::enums::ReasoningEffort;
-use std::path::PathBuf;
+use std::{
+    io::{IsTerminal, Read},
+    path::PathBuf,
+};
 
 /// CLI arguments parsed from environment variables and command-line input.
 #[derive(Clone, Debug, Default)]
@@ -35,6 +38,8 @@ pub struct Args {
 
     /// Keep the session alive after the first response
     pub interactive: bool,
+
+    pub no_system_tool: bool,
 }
 
 const VERSION: &str = "tars 0.1.0 [https://github.com/nlkli/tars]";
@@ -57,6 +62,7 @@ Options:
       --base-url, --bu <URL>      API base URL  [env: TARS_BASE_URL]
       --api-key, --ak <KEY>       API key       [env: TARS_API_KEY]
   -i, --interactive               Stay interactive after the first response
+  --no-system-tool
   -h, --help                      Print this help message
   -V, --version                   Print version information
 
@@ -120,6 +126,9 @@ impl Args {
                     }
                     "interactive" => {
                         args.interactive = true;
+                    }
+                    "no-system-tool" => {
+                        args.no_system_tool = true;
                     }
                     "help" => {
                         print!("{}", HELP);
@@ -274,6 +283,9 @@ impl Args {
                 builder = builder.system(s);
             }
         }
+        // if let Ok(Some(content)) = read_stdin_if_present() {
+        //     builder = builder.prompt(content);
+        // }
         for p in &self.prompt {
             let path = PathBuf::from(p);
             if path.is_file() {
@@ -291,6 +303,12 @@ impl Args {
             let _ = terminal.execute(&format!("cd {wd}"), None)?;
         }
 
+        builder = builder.stream();
+
+        if self.no_system_tool {
+            return builder.build();
+        }
+
         builder = builder
             .stream()
             .with_system_tool(terminal, 2048)
@@ -299,3 +317,18 @@ impl Args {
         builder.build()
     }
 }
+
+// fn read_stdin_if_present() -> Result<Option<String>> {
+//     if std::io::stdin().is_terminal() {
+//         return Ok(None);
+//     }
+//
+//     let mut input = String::new();
+//     std::io::stdin().read_to_string(&mut input)?;
+//
+//     if input.trim().is_empty() {
+//         Ok(None)
+//     } else {
+//         Ok(Some(input))
+//     }
+// }
